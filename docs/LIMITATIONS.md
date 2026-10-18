@@ -15,15 +15,17 @@
    a hijacked model still can't read hidden columns or write anything. The worst case is a wrong
    but authorized answer.
 2. **Wrong answers.** The guard ensures queries are *safe*, not *correct*. The UI always shows the
-   SQL that ran, its assumptions and the raw rows, so users can check. The free 70B model is good
+   SQL that ran, its assumptions and the raw rows, so users can check. The free gpt-oss-120b model is good
    but can misread ambiguous questions.
 3. **Inference over allowed data.** Users can always learn anything about columns they're allowed
    to see, including through predicates. Hide columns that shouldn't be queryable at all.
-4. **Summaries can misstate numbers.** The 8B summary model sees only the shown rows and is told not
+4. **Summaries can misstate numbers.** The gpt-oss-20b summary model sees only the shown rows and is told not
    to invent values, but the table is the source of truth.
-5. **Groq free-tier limits.** About 1,000 requests/day for the 70B model and 14,400/day for the 8B
-   model; each question uses 1–5 calls. When limits are hit the user gets a clear "try again"
-   message. Upgrade or switch models in `.env`.
+5. **Groq free-tier limits and model churn.** Free-tier quotas are per model and per day, and each
+   question uses 1–5 calls. When limits are hit the user gets a clear "try again" message. Groq also
+   retires models. Llama 3.x went away on 2026-08-16, which is why the defaults are now
+   `openai/gpt-oss-120b` and `openai/gpt-oss-20b`. Check console.groq.com/docs/deprecations and update
+   `.env` when a model is deprecated; the app logs a clear error at start-up if one is missing.
 6. **Type inference is heuristic.** Ambiguous dates where every value fits both day-first and
    month-first are read as day-first (`dd/mm/yyyy`). Zero-padded codes stay text.
 7. **sqlglot version coupling.** Function names are matched on sqlglot's canonical names.

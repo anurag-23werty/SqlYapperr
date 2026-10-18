@@ -7,7 +7,7 @@ Only that rewritten SQL runs, read-only, under a second database-level authorize
 
 ```
 question ─► input guard ─► router ─► LLM drafts SQL ─► AST guard ─► fresh SQL from the tree
-                (Groq 8B)    (Groq 70B)        │           │
+           (gpt-oss-20b) (gpt-oss-120b)        │           │
                                 feedback ◄─────┘ rejected  ▼
                                                 SQLite authorizer + limits ─► rows ─► summary
 ```

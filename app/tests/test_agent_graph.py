@@ -107,10 +107,17 @@ def test_bad_json_counts_as_attempt_then_recovers(sample_ctx, mock_settings, use
 
 
 @engine
-@pytest.mark.parametrize("kind", ["rate_limited", "auth", "unavailable"])
+@pytest.mark.parametrize("kind", ["rate_limited", "auth", "unavailable", "model_not_found"])
 def test_llm_outage_stops_cleanly(sample_ctx, mock_settings, use_langgraph, kind) -> None:  # type: ignore[no-untyped-def]
     st, _ = run(sample_ctx, mock_settings, {"route": [DATA], "sql": [LLMError(kind, "down")]}, use_langgraph=use_langgraph)
     assert st["kind"] == "error" and st["error_code"] == f"LLM_{kind.upper()}"
+
+
+@engine
+def test_misconfigured_model_stops_at_router(sample_ctx, mock_settings, use_langgraph) -> None:  # type: ignore[no-untyped-def]
+    st, llm = run(sample_ctx, mock_settings, {"route": [LLMError("model_not_found", "model gone")]},
+                  use_langgraph=use_langgraph)
+    assert st["kind"] == "error" and st["error_code"] == "LLM_MODEL_NOT_FOUND" and len(llm.calls) == 1
 
 
 @engine

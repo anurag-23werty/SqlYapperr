@@ -136,11 +136,12 @@ def build_nodes(deps: AgentDeps) -> dict[str, Callable[[AgentState], dict[str, A
         try:
             out = deps.llm.complete_json(
                 purpose="route", model=s.groq_fast_model, system=prompts.ROUTER_SYSTEM,
-                user=prompts.router_user(state["question"], meta, state.get("history", [])), max_tokens=120,
+                user=prompts.router_user(state["question"], meta, state.get("history", [])), max_tokens=600,
+                reasoning_effort="low",
             )
             intent = str(out.get("intent", "data_question"))
         except LLMError as err:
-            if err.kind in {"auth", "rate_limited"}:
+            if err.kind in {"auth", "rate_limited", "model_not_found"}:
                 return {"kind": "error", "message": err.message, "error_code": f"LLM_{err.kind.upper()}"}
             intent = "data_question"  # router is advisory; the SQL guard is the real boundary
         if intent == "out_of_scope":
@@ -164,7 +165,8 @@ def build_nodes(deps: AgentDeps) -> dict[str, Callable[[AgentState], dict[str, A
         try:
             out = deps.llm.complete_json(
                 purpose="sql", model=s.groq_sql_model, system=prompts.SQL_SYSTEM.format(max_rows=s.max_rows),
-                user=prompts.sql_user(state["question"], meta, state.get("history", []), feedback), max_tokens=900,
+                user=prompts.sql_user(state["question"], meta, state.get("history", []), feedback), max_tokens=2500,
+                reasoning_effort=s.groq_reasoning_effort,
             )
         except LLMError as err:
             attempts.append({"attempt": generations, "stage": "generation", "outcome": "failed", "codes": [f"LLM_{err.kind.upper()}"]})
@@ -234,7 +236,7 @@ def build_nodes(deps: AgentDeps) -> dict[str, Callable[[AgentState], dict[str, A
             out = deps.llm.complete_json(
                 purpose="summary", model=s.groq_fast_model, system=prompts.SUMMARY_SYSTEM,
                 user=prompts.summary_user(state["question"], state["columns"], state["rows"], state["truncated"]),
-                max_tokens=200,
+                max_tokens=600, reasoning_effort="low",
             )
             answer = " ".join(str(out.get("answer") or "").split())[:600]
         except LLMError:

@@ -80,3 +80,46 @@ def test_mock_llm_routes_and_drafts() -> None:
         "intent"] == "out_of_scope"
     out = m.complete_json(purpose="sql", model="x", system="", user="<schema>\nTABLE sales (a)\n</schema>\n<user_question>x</user_question>")
     assert out["sql"] == "SELECT COUNT(1) AS row_count FROM sales"
+
+
+def test_gpt_oss_gets_reasoning_params_and_other_models_do_not() -> None:
+    bodies = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        bodies.append(json.loads(request.content))
+        return ok('{"ok": true}')
+
+    c = client(handler)
+    c.complete_json(purpose="sql", model="openai/gpt-oss-120b", system="s", user="u", reasoning_effort="medium")
+    c.complete_json(purpose="route", model="openai/gpt-oss-20b", system="s", user="u")
+    c.complete_json(purpose="route", model="some/other-model", system="s", user="u")
+    assert bodies[0]["reasoning_effort"] == "medium" and bodies[0]["include_reasoning"] is False
+    assert bodies[1]["reasoning_effort"] == "low"
+    assert "reasoning_effort" not in bodies[2] and "include_reasoning" not in bodies[2]
+    assert all("max_completion_tokens" in b for b in bodies)
+
+
+def test_unknown_model_gives_actionable_error() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(404, json={"error": {"message": "The model `llama-3.3-70b-versatile` does not exist"}})
+
+    with pytest.raises(LLMError) as info:
+        client(handler).complete_json(purpose="sql", model="llama-3.3-70b-versatile", system="s", user="u")
+    assert info.value.kind == "model_not_found"
+    assert "llama-3.3-70b-versatile" in info.value.message and "SQLY_GROQ_SQL_MODEL" in info.value.message
+
+
+def test_available_models() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert request.url.path.endswith("/models")
+        return httpx.Response(200, json={"data": [{"id": "openai/gpt-oss-120b"}, {"id": "openai/gpt-oss-20b"}]})
+
+    assert client(handler).available_models() == {"openai/gpt-oss-120b", "openai/gpt-oss-20b"}
+    assert client(lambda r: httpx.Response(500)).available_models() == set()
+
+
+def test_default_models_are_current() -> None:
+    from app.config import Settings
+
+    s = Settings(llm_provider="mock")
+    assert s.groq_sql_model == "openai/gpt-oss-120b" and s.groq_fast_model == "openai/gpt-oss-20b"

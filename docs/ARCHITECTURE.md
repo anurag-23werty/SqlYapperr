@@ -11,8 +11,8 @@ flowchart TD
     CTX --> G
 
     subgraph G[LangGraph agent]
-      IG[guard_input<br/>normalize + injection / write-intent checks] -->|ok| RT[route<br/>Groq llama-3.1-8b-instant]
-      RT -->|data_question| GEN[generate_sql<br/>Groq llama-3.3-70b-versatile]
+      IG[guard_input<br/>normalize + injection / write-intent checks] -->|ok| RT[route<br/>Groq openai/gpt-oss-20b]
+      RT -->|data_question| GEN[generate_sql<br/>Groq openai/gpt-oss-120b]
       GEN --> GS[guard_sql<br/>parse → check every node → rewrite]
       GS -->|rejected| GEN
       GS -->|ValidatedQuery| EX[execute<br/>read-only + authorizer + deadline]
@@ -61,10 +61,13 @@ flowchart TD
 
 | Purpose | Default model | Why |
 |---|---|---|
-| Draft SQL | `llama-3.3-70b-versatile` | strongest free model for structured SQL |
-| Route + summarize | `llama-3.1-8b-instant` | fast, with a much higher daily request quota |
+| Draft SQL | `openai/gpt-oss-120b` | strongest free reasoning model; `reasoning_effort=medium` |
+| Route + summarize | `openai/gpt-oss-20b` | fast and cheap; `reasoning_effort=low` |
 
-Both are configurable in `.env`. Every call uses JSON mode and temperature 0.
+Both are configurable in `.env`. Every call uses JSON mode and temperature 0, with
+`include_reasoning=false` so only the final JSON comes back. Groq retired Llama 3.x on its free
+tier on 2026-08-16. At start-up the app lists the models your key can use and logs an error if a
+configured model is missing. A missing model at request time returns `LLM_MODEL_NOT_FOUND`.
 
 ## Data model (app database)
 

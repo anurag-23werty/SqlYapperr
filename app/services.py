@@ -37,13 +37,23 @@ class Services:
     version: str = VERSION
 
 
-def build_llm(settings: Settings) -> LLMClient:
+def build_llm(settings: Settings, check_models: bool = True) -> LLMClient:
     if settings.llm_provider == "groq":
         assert settings.groq_api_key is not None
-        return GroqClient(
+        client = GroqClient(
             api_key=settings.groq_api_key.get_secret_value(), base_url=settings.groq_base_url,
             timeout_s=settings.llm_timeout_s, max_retries=settings.llm_max_retries,
         )
+        if check_models:
+            available = client.available_models()
+            if not available:
+                log.warning("could not list Groq models (check GROQ_API_KEY and network)")
+            for name in {settings.groq_sql_model, settings.groq_fast_model} - available if available else set():
+                log.error(
+                    "Groq model '%s' is not available for this key. Available text models include: %s",
+                    name, ", ".join(sorted(m for m in available if "whisper" not in m and "tts" not in m))[:500],
+                )
+        return client
     log.warning("SQLY_LLM_PROVIDER=mock: using the offline mock model (set GROQ_API_KEY for real answers)")
     return MockLLM()
 

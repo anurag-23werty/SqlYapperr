@@ -25,7 +25,9 @@ Purpose = Literal["route", "sql", "summary"]
 
 
 class LLMError(Exception):
-    def __init__(self, kind: Literal["rate_limited", "unavailable", "bad_output", "auth"], message: str) -> None:
+    def __init__(
+        self, kind: Literal["rate_limited", "unavailable", "bad_output", "auth", "model_not_found"], message: str
+    ) -> None:
         super().__init__(message)
         self.kind = kind
         self.message = message
@@ -35,7 +37,8 @@ class LLMClient(Protocol):
     name: str
 
     def complete_json(
-        self, *, purpose: Purpose, model: str, system: str, user: str, max_tokens: int = 700
+        self, *, purpose: Purpose, model: str, system: str, user: str, max_tokens: int = 700,
+        reasoning_effort: str | None = None,
     ) -> dict[str, Any]: ...
 
 
@@ -74,15 +77,20 @@ class GroqClient:
         self._sleep = sleep
 
     def complete_json(
-        self, *, purpose: Purpose, model: str, system: str, user: str, max_tokens: int = 700
+        self, *, purpose: Purpose, model: str, system: str, user: str, max_tokens: int = 700,
+        reasoning_effort: str | None = None,
     ) -> dict[str, Any]:
-        payload = {
+        payload: dict[str, Any] = {
             "model": model,
             "temperature": 0,
-            "max_tokens": max_tokens,
+            "max_completion_tokens": max_tokens,
             "response_format": {"type": "json_object"},
             "messages": [{"role": "system", "content": system}, {"role": "user", "content": user}],
         }
+        if is_reasoning_model(model):
+            # GPT-OSS reasons before answering; keep the reasoning out of the reply and its budget small.
+            payload["reasoning_effort"] = reasoning_effort or "low"
+            payload["include_reasoning"] = False
         attempt = 0
         while True:
             try:
@@ -102,6 +110,13 @@ class GroqClient:
                 return parse_json_object(content)
             if resp.status_code in (401, 403):
                 raise LLMError("auth", "the language model rejected the API key (check GROQ_API_KEY)")
+            if resp.status_code == 404:
+                log.error("groq model not found model=%s detail=%s", model, _error_detail(resp))
+                raise LLMError(
+                    "model_not_found",
+                    f"the model '{model}' is not available on Groq; set SQLY_GROQ_SQL_MODEL / "
+                    "SQLY_GROQ_FAST_MODEL in .env to a current model (see console.groq.com/docs/models)",
+                )
             if resp.status_code == 400 and "json" in resp.text.lower():
                 # JSON mode validation failure on the provider side: treat as bad output so we can retry/correct.
                 raise LLMError("bad_output", "model failed to produce valid JSON")
@@ -113,8 +128,32 @@ class GroqClient:
                 continue
             if resp.status_code == 429:
                 raise LLMError("rate_limited", "the free-tier rate limit was reached; try again in a minute")
-            log.warning("groq error status=%s purpose=%s", resp.status_code, purpose)
+            log.warning("groq error status=%s purpose=%s detail=%s", resp.status_code, purpose, _error_detail(resp))
             raise LLMError("unavailable", "the language model returned an error")
+
+
+    def available_models(self) -> set[str]:
+        """Model ids this key can use (GET /models). Used for a start-up sanity check."""
+        try:
+            resp = self._client.get("/models")
+            resp.raise_for_status()
+            return {m["id"] for m in resp.json().get("data", []) if isinstance(m, dict) and "id" in m}
+        except (httpx.HTTPError, ValueError, KeyError, TypeError):
+            return set()
+
+
+def is_reasoning_model(model: str) -> bool:
+    return model.startswith("openai/gpt-oss")
+
+
+def _error_detail(resp: httpx.Response) -> str:
+    """Provider error message for logs (never contains the API key), truncated."""
+    try:
+        detail = resp.json().get("error", {})
+        text = detail.get("message", "") if isinstance(detail, dict) else str(detail)
+    except ValueError:
+        text = resp.text
+    return "".join(ch for ch in str(text) if ch.isprintable())[:300]
 
 
 class ScriptedLLM:
@@ -127,7 +166,8 @@ class ScriptedLLM:
         self.calls: list[dict[str, str]] = []
 
     def complete_json(
-        self, *, purpose: Purpose, model: str, system: str, user: str, max_tokens: int = 700
+        self, *, purpose: Purpose, model: str, system: str, user: str, max_tokens: int = 700,
+        reasoning_effort: str | None = None,
     ) -> dict[str, Any]:
         self.calls.append({"purpose": purpose, "model": model, "system": system, "user": user})
         queue = self._script.get(purpose)
@@ -145,7 +185,8 @@ class MockLLM:
     name = "mock"
 
     def complete_json(
-        self, *, purpose: Purpose, model: str, system: str, user: str, max_tokens: int = 700
+        self, *, purpose: Purpose, model: str, system: str, user: str, max_tokens: int = 700,
+        reasoning_effort: str | None = None,
     ) -> dict[str, Any]:
         question = _between(user, "<user_question>", "</user_question>").lower()
         if purpose == "route":

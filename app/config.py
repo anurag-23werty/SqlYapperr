@@ -79,8 +79,10 @@ class Settings(BaseModel):
     llm_provider: Literal["groq", "mock"] = "groq"
     groq_api_key: SecretStr | None = None
     groq_base_url: str = "https://api.groq.com/openai/v1"
-    groq_sql_model: str = "llama-3.3-70b-versatile"   # drafts SQL
-    groq_fast_model: str = "llama-3.1-8b-instant"     # routing + answer summaries
+    # Llama 3.x models were retired from Groq's free tier on 2026-08-16; GPT-OSS replaces them.
+    groq_sql_model: str = "openai/gpt-oss-120b"       # drafts SQL
+    groq_fast_model: str = "openai/gpt-oss-20b"       # routing + answer summaries
+    groq_reasoning_effort: Literal["low", "medium", "high"] = "medium"  # for SQL drafting (GPT-OSS only)
     llm_timeout_s: float = Field(default=30.0, gt=0, le=300)
     llm_max_retries: int = Field(default=2, ge=0, le=5)
     max_corrections: int = Field(default=HARD_MAX_CORRECTIONS, ge=0, le=HARD_MAX_CORRECTIONS)
