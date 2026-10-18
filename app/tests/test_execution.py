@@ -9,7 +9,10 @@ from app.execution.query_executor import ExecutionError, ExecutionErrorCode, Exe
 from app.security.ast_validator import SQLValidator
 from app.security.policies import DEFAULT_POLICY
 
-SLOW = "SELECT COUNT(*) AS n FROM order_items a CROSS JOIN order_items b CROSS JOIN order_items c"
+SLOW = (
+    "SELECT COUNT(1) AS n FROM order_items a JOIN order_items b ON a.quantity >= b.quantity "
+    "JOIN order_items c ON b.quantity >= c.quantity"
+)
 
 
 def test_structured_result(validator: SQLValidator, executor: QueryExecutor) -> None:

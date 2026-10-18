@@ -181,3 +181,24 @@ def test_issue_messages_do_not_leak_existence(validator: SQLValidator) -> None:
     real = validator.validate("SELECT a.username FROM admin_users a").issues[0].message
     fake = validator.validate("SELECT a.username FROM no_such_table a").issues[0].message
     assert real.replace("admin_users", "X") == fake.replace("no_such_table", "X")
+
+
+# ------------------------------------------------- star-free and cartesian rules
+
+
+def test_count_star_is_rewritten_so_no_star_reaches_the_db(validator: SQLValidator) -> None:
+    result = validator.validate("SELECT o.status, COUNT(*) AS n FROM orders o GROUP BY o.status")
+    assert result.ok
+    assert "*" not in result.query.sql and "COUNT(1)" in result.query.sql
+
+
+@pytest.mark.parametrize(
+    "sql",
+    [
+        "SELECT c.name FROM customers c, orders o",
+        "SELECT c.name FROM customers c CROSS JOIN orders o",
+        "SELECT c.name FROM customers c JOIN orders o",
+    ],
+)
+def test_cartesian_joins_rejected(validator: SQLValidator, sql: str) -> None:
+    assert IssueCode.COMPLEXITY in codes(validator.validate(sql))

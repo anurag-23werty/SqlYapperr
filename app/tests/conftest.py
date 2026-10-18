@@ -41,3 +41,19 @@ def schema(db_path: Path):
 
 def codes(result) -> set[str]:
     return {i.code for i in result.issues}
+
+
+@pytest.fixture(scope="session")
+def sample_ctx(db_path: Path):
+    from app.storage.datasets import context_from_meta, describe_sqlite
+
+    meta = describe_sqlite(db_path, hidden_tables={"admin_users"})
+    return context_from_meta("d" * 32, "Sample shop", db_path, meta)
+
+
+@pytest.fixture(scope="session")
+def mock_settings(tmp_path_factory: pytest.TempPathFactory):
+    from app.config import Settings
+
+    d = tmp_path_factory.mktemp("settings")
+    return Settings(llm_provider="mock", data_dir=d, db_path=d / "sample.db", app_db_path=d / "app.db")
