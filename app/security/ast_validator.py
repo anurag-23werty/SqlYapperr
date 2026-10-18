@@ -157,13 +157,18 @@ class SQLValidator:
             tree = self._parse(sql)
             self._check_tree(tree)
             effective_limit, applied_default = self._apply_limits(tree)
+            self._rewrite(tree)
             safe_sql = tree.sql(dialect=DIALECT, comments=False)
             # Re-parse and re-check the exact string we will execute, so validation
             # and execution can never disagree about what the query is.
             reparsed = self._parse(safe_sql)
             self._check_tree(reparsed)
             reparsed_limit, _ = self._apply_limits(reparsed)
-            if reparsed_limit != effective_limit or reparsed.args.get("limit") is None:
+            if (
+                reparsed_limit != effective_limit
+                or reparsed.args.get("limit") is None
+                or any(True for _ in reparsed.find_all(exp.Star))
+            ):
                 raise _Reject(ValidationIssue(IssueCode.INTERNAL, "query could not be validated safely"))
             tables = frozenset(
                 t.name.lower() for t in tree.find_all(exp.Table) if self.policy.is_table_allowed(t.name)
@@ -226,8 +231,14 @@ class SQLValidator:
                 )
             if isinstance(node, SET_OPERATIONS) and not self.policy.allow_set_operations:
                 raise _Reject(ValidationIssue(IssueCode.FORBIDDEN, "set operations are not allowed"))
-            if isinstance(node, exp.Join) and str(node.args.get("method") or "").upper() == "NATURAL":
-                raise _Reject(ValidationIssue(IssueCode.FORBIDDEN, "NATURAL JOIN is not allowed; use explicit ON"))
+            if isinstance(node, exp.Join):
+                if str(node.args.get("method") or "").upper() == "NATURAL":
+                    raise _Reject(ValidationIssue(IssueCode.FORBIDDEN, "NATURAL JOIN is not allowed; use explicit ON"))
+                if not node.args.get("on") and not node.args.get("using"):
+                    # Comma joins and CROSS JOINs build cartesian products: slow and almost never intended.
+                    raise _Reject(ValidationIssue(
+                        IssueCode.COMPLEXITY, "every JOIN needs an ON condition (cartesian products are not allowed)"
+                    ))
 
     def _check_complexity(self, tree: exp.Expression) -> None:
         cfg = self.config
@@ -401,6 +412,15 @@ class SQLValidator:
             elif isinstance(src, Scope) and name in _named_outputs(src.expression):
                 return False
         return True
+
+    # --------------------------------------------------------------- rewrites
+    @staticmethod
+    def _rewrite(tree: exp.Expression) -> None:
+        """Normalize the validated tree. No ``*`` ever reaches the database:
+        ``COUNT(*)`` becomes the equivalent ``COUNT(1)``."""
+        for star in list(tree.find_all(exp.Star)):
+            if isinstance(star.parent, exp.Count):
+                star.replace(exp.Literal.number(1))
 
     # ------------------------------------------------------------------ limits
     def _apply_limits(self, tree: exp.Expression) -> tuple[int, bool]:

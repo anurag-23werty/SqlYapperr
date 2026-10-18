@@ -74,6 +74,7 @@ class QueryResult:
     truncated: bool
     duration_ms: float
     sql: str = field(repr=False, default="")
+    plan: list[str] = field(default_factory=list)  # EXPLAIN QUERY PLAN details (index use, scans)
 
 
 def _json_safe(value: Any) -> Any:
@@ -156,6 +157,7 @@ class QueryExecutor:
                 rows.append(row)
             if state["timed_out"]:
                 raise sqlite3.OperationalError("interrupted")
+            plan = self._plan(conn, query.sql, params)
         except sqlite3.Error as exc:
             denials = list(audit.denials) if audit is not None else []
             code = _classify(exc, state["timed_out"], bool(denials))
@@ -179,4 +181,14 @@ class QueryExecutor:
             truncated=truncated,
             duration_ms=round((time.monotonic() - started) * 1000, 2),
             sql=query.sql,
+            plan=plan,
         )
+
+    @staticmethod
+    def _plan(conn: sqlite3.Connection, sql: str, params: Sequence[SqlParam]) -> list[str]:
+        """Best-effort query plan for transparency (same connection, same authorizer)."""
+        try:
+            rows = conn.execute(f"EXPLAIN QUERY PLAN {sql}", tuple(params)).fetchmany(30)
+        except sqlite3.Error:
+            return []
+        return [str(r[3])[:200] for r in rows if len(r) > 3]
