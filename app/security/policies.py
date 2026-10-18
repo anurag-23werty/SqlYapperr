@@ -7,7 +7,7 @@ object, but they enforce it independently.
 
 from __future__ import annotations
 
-from collections.abc import Mapping
+from collections.abc import Iterable, Mapping
 from dataclasses import dataclass, field
 from types import MappingProxyType
 
@@ -91,3 +91,12 @@ DEFAULT_POLICY = AccessPolicy(
     ast_functions=_AST_FUNCTIONS,
     sqlite_functions=_SQLITE_FUNCTIONS,
 )
+
+
+def build_policy(tables: Mapping[str, Iterable[str]]) -> AccessPolicy:
+    """Policy for a user dataset: only the given (non-hidden) tables and columns."""
+    return AccessPolicy(
+        tables=_freeze({t: set(cols) for t, cols in tables.items()}),
+        ast_functions=_AST_FUNCTIONS,
+        sqlite_functions=_SQLITE_FUNCTIONS,
+    )
