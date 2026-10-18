@@ -1,0 +1,109 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>SQLYapper</title>
+  <link rel="stylesheet" href="/static/styles.css">
+  <script type="module" src="/static/app.js"></script>
+</head>
+<body>
+  <!-- Auth -->
+  <main id="auth-view" class="auth" hidden>
+    <section class="auth-card" aria-labelledby="auth-title">
+      <h1 id="auth-title" class="brand">SQLYapper</h1>
+      <p class="lede">Ask your data questions in plain English. Every query is checked before it touches your data.</p>
+
+      <div class="tabs" role="tablist">
+        <button role="tab" id="tab-signin" aria-selected="true" data-mode="signin">Sign in</button>
+        <button role="tab" id="tab-signup" aria-selected="false" data-mode="signup">Create account</button>
+      </div>
+
+      <form id="auth-form" novalidate>
+        <label class="field" id="name-field" hidden>
+          <span>Name</span>
+          <input name="name" autocomplete="name" maxlength="80">
+        </label>
+        <label class="field">
+          <span>Email</span>
+          <input name="email" type="email" autocomplete="email" required maxlength="254">
+        </label>
+        <label class="field">
+          <span>Password</span>
+          <input name="password" type="password" autocomplete="current-password" required maxlength="128">
+          <small id="pw-hint" hidden>At least 10 characters, mixing letters with digits or symbols.</small>
+        </label>
+        <p class="form-error" id="auth-error" role="alert" hidden></p>
+        <button class="primary" type="submit" id="auth-submit">Sign in</button>
+      </form>
+    </section>
+  </main>
+
+  <!-- App -->
+  <div id="app-view" class="shell" hidden>
+    <aside class="sidebar">
+      <div class="sidebar-head">
+        <span class="brand small">SQLYapper</span>
+        <button class="ghost" id="signout">Sign out</button>
+      </div>
+      <p class="who" id="who"></p>
+
+      <h2 class="side-title">Datasets</h2>
+      <ul id="dataset-list" class="dataset-list"></ul>
+
+      <form id="upload-form" class="upload">
+        <h2 class="side-title">Add your data</h2>
+        <label class="field">
+          <span>Name</span>
+          <input name="name" placeholder="Q3 sales" maxlength="80">
+        </label>
+        <label class="drop">
+          <input type="file" name="files" accept=".csv,.tsv,.txt,text/csv" multiple required>
+          <span id="drop-label">Choose CSV files (each file becomes a table)</span>
+        </label>
+        <p class="form-error" id="upload-error" role="alert" hidden></p>
+        <button class="primary" type="submit">Upload</button>
+      </form>
+    </aside>
+
+    <main class="workspace">
+      <header class="ws-head">
+        <div>
+          <h1 id="ds-title">Pick a dataset</h1>
+          <p id="ds-sub" class="muted"></p>
+        </div>
+        <div class="ws-actions">
+          <button class="ghost" id="toggle-schema" aria-expanded="false">Columns</button>
+          <button class="ghost" id="new-chat">New conversation</button>
+        </div>
+      </header>
+
+      <section id="schema-panel" class="schema" hidden aria-label="Columns and visibility"></section>
+
+      <section id="thread" class="thread" aria-live="polite"></section>
+
+      <form id="ask-form" class="composer">
+        <label for="question" class="sr-only">Your question</label>
+        <textarea id="question" rows="2" maxlength="1000" placeholder="e.g. Which 5 products had the highest return rate last year?" disabled></textarea>
+        <button class="primary" type="submit" id="ask" disabled>Ask</button>
+      </form>
+    </main>
+  </div>
+
+  <template id="tpl-turn">
+    <article class="turn">
+      <h3 class="q"></h3>
+      <p class="a"></p>
+      <ol class="trail" aria-label="How this answer was produced"></ol>
+      <details class="sql-box" hidden>
+        <summary>SQL that ran</summary>
+        <pre><code></code></pre>
+        <p class="assumptions muted"></p>
+        <details class="plan"><summary>Query plan</summary><ul></ul></details>
+      </details>
+      <div class="table-wrap" hidden><table><thead></thead><tbody></tbody></table></div>
+      <p class="foot muted"></p>
+    </article>
+  </template>
+</body>
+</html>
