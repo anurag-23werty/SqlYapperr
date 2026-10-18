@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from fastapi import APIRouter, HTTPException, Request
+from fastapi.responses import RedirectResponse, Response
 
 from app.api.schemas import (
     Attempt,
@@ -25,6 +26,17 @@ def _container(request: Request) -> Container:
 
 def _request_id(request: Request) -> str:
     return request.state.request_id
+
+
+@router.get("/", include_in_schema=False)
+def root() -> RedirectResponse:
+    """Send browsers to the interactive API docs."""
+    return RedirectResponse(url="/docs")
+
+
+@router.get("/favicon.ico", include_in_schema=False)
+def favicon() -> Response:
+    return Response(status_code=204)
 
 
 @router.get("/health", response_model=HealthResponse)

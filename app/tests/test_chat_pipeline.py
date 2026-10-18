@@ -142,6 +142,12 @@ def client(tmp_path_factory) -> TestClient:
     return TestClient(create_app(Settings(db_path=db, max_body_bytes=4_096), generator=MockSQLGenerator()))
 
 
+def test_root_redirects_to_docs(client: TestClient) -> None:
+    resp = client.get("/", follow_redirects=False)
+    assert resp.status_code == 307 and resp.headers["location"] == "/docs"
+    assert client.get("/favicon.ico").status_code == 204
+
+
 def test_health(client: TestClient) -> None:
     body = client.get("/health").json()
     assert body["status"] == "ok" and body["database"] == "ok"
