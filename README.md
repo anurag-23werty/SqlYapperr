@@ -1,58 +1,68 @@
-# SQLYapper: chat with a SQL database, securely
+# SQLYapper
 
-Phase 1 is a small, secure vertical slice of an AI agent that answers natural-language
-questions against a SQL database. The LLM proposes SQL. It is **never trusted**.
-Every candidate passes several independent security layers before anything touches the database.
+Upload your data, ask questions in plain English, and get answers backed by SQL you can read.
+The model drafts SQL. **That SQL never reaches the database directly.** A guard parses it into a
+syntax tree, checks every node against an allowlist, and prints fresh SQL from the validated tree.
+Only that rewritten SQL runs, read-only, under a second database-level authorizer.
 
 ```
-question ─► schema introspection ─► LLM candidate ─► SQLGlot AST ─► AST validator
-         ─► re-serialised SQL ─► SQLite authorizer ─► bounded execution ─► structured result
-                     ▲                                                     │
-                     └──────── sanitised feedback (max 2 corrections) ◄────┘
+question ─► input guard ─► router ─► LLM drafts SQL ─► AST guard ─► fresh SQL from the tree
+                (Groq 8B)    (Groq 70B)        │           │
+                                feedback ◄─────┘ rejected  ▼
+                                                SQLite authorizer + limits ─► rows ─► summary
 ```
 
-See [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md), [`docs/SECURITY_POLICY.md`](docs/SECURITY_POLICY.md),
-[`docs/THREAT_MODEL.md`](docs/THREAT_MODEL.md) and [`docs/LIMITATIONS.md`](docs/LIMITATIONS.md) and the [test report](docs/TEST_REPORT.md).
+## Features
 
-## Quick start
+- **Sign up / sign in** with HttpOnly session cookies, CSRF tokens and rate-limited logins.
+- **Bring your own data**: upload CSV files. Each file becomes a table. Types, dates and join keys
+  are detected, and indexes are added for join and date columns.
+- **Sensitive columns start hidden** (email, phone, password, address, ...). Hidden columns are never
+  shown to the model and can't be queried. You can hide or show any column yourself.
+- **LangGraph agent** that routes questions, drafts SQL with Groq (free tier), and corrects itself
+  at most twice. It handles out-of-scope questions and follow-ups.
+- **Guardrails** against prompt injection: input guard, delimiter fencing, a router, the AST guard,
+  and the SQLite authorizer. No `*` ever reaches the database.
+
+## Run it
 
 ```bash
-python3.12 -m venv .venv && source .venv/bin/activate
+python3.12 -m venv .venv && source .venv/bin/activate     # Python 3.12+
 pip install -r requirements-dev.txt
-cp .env.example .env            # optional; defaults are safe
-python -m app.database.seed     # creates data/sqlyapper.db (deterministic)
-uvicorn app.main:app --reload   # http://127.0.0.1:8000/docs
+cp .env.example .env
+# edit .env: set GROQ_API_KEY (free key: https://console.groq.com/keys) and SQLY_SECRET_KEY
+python -m uvicorn app.main:app --reload --port 8010
 ```
 
-## Try it
-
-```bash
-curl -s localhost:8000/health
-curl -s localhost:8000/schema | python -m json.tool
-curl -s -X POST localhost:8000/chat -H 'content-type: application/json' \
-     -d '{"question":"What are the top 10 customers by revenue?"}' | python -m json.tool
-curl -s -X POST localhost:8000/validate -H 'content-type: application/json' \
-     -d '{"sql":"SELECT * FROM customers LIMIT -1"}' | python -m json.tool
-```
+Open http://127.0.0.1:8010, create an account, and try the sample shop dataset or upload your own
+CSV files. Without a Groq key, set `SQLY_LLM_PROVIDER=mock` to try the app with a simple offline model.
 
 ## Tests
 
 ```bash
-pytest -v                                   # full suite
-pytest -v --junitxml=reports/junit.xml      # machine-readable report
+pytest -q
 ```
 
-## Project layout
+## Docs
+
+- [Architecture](docs/ARCHITECTURE.md)
+- [Security policy](docs/SECURITY_POLICY.md)
+- [Threat model](docs/THREAT_MODEL.md)
+- [Known limitations](docs/LIMITATIONS.md)
+- [Test report](docs/TEST_REPORT.md)
+
+## Layout
 
 ```
 app/
-  main.py               FastAPI app factory, middleware, error handlers
-  config.py             immutable env-driven settings (SQLY_*)
-  api/                  routes + request/response models
-  database/             connection factory, seed, introspection, SQLite authorizer
-  security/             policies (allowlists), limits, SQLGlot AST validator
-  agent/                LLM interface, mock + Anthropic generators, correction loop
-  execution/            constrained query executor
-  tests/                adversarial unit + integration tests
-docs/                   architecture, security policy, threat model, limitations, test report
+  main.py, config.py, env.py, services.py   app factory, settings, .env loader, wiring
+  auth/                                      passwords (scrypt), sessions + CSRF, rate limiting
+  storage/                                   app database, CSV ingestion + dataset metadata
+  agent/                                     Groq client, prompts, LangGraph agent
+  security/                                  AST guard, LIMIT rules, policies, prompt guard
+  database/                                  read-only connections, SQLite authorizer, sample seed
+  execution/                                 constrained executor (deadline, row/byte caps)
+  api/                                       HTTP routes, schemas, auth/CSRF dependencies
+  web/static/                                sign-in page + chat UI (no framework, strict CSP)
+  tests/                                     unit, adversarial and end-to-end tests
 ```

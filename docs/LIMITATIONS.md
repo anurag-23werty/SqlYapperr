@@ -1,38 +1,33 @@
-# Known Limitations and Unresolved Risks
+# Known Limitations and Open Risks
 
-## Not built in Phase 1 (by design)
-
-- **No API authentication or per-user authorization.** Every caller gets the same policy.
-  Add auth and per-principal policies before any shared deployment.
-- **No rate limiting or concurrency cap.** One client can send many slow (≤ 2 s) queries in
-  parallel. Add a rate limiter and a bounded worker pool.
-- **No row-level security.** Column/table allowlists only. Any caller can read every allowed row.
-- **No persistent audit log.** Rejections and denials go to process logs only.
+## Product gaps
+- **No password reset or email verification.** Needs an email provider.
+- **No MFA.**
+- **CSV only.** Excel, Parquet and direct database connections (Postgres/MySQL) are not supported yet.
+- **Rate limits are in-process.** They reset on restart and aren't shared between workers.
+  Use Redis for multi-worker deployments.
+- **SQLite only.** Each dataset is a local file. Fine for single-node deployments; a shared
+  warehouse would need a read-only DB role, statement timeouts and row-level security instead.
 
 ## Residual risks
-
-1. **Inference through aggregates.** An allowed column can still leak information through
-   predicates (`WHERE c.name LIKE 'A%'`). Hidden columns cannot be used this way, since both
-   layers deny them, but a boolean oracle over *allowed* data is inherent to the feature.
-2. **Timing side channels.** Execution time can hint at data distribution in allowed tables.
-3. **Deadline granularity.** The progress handler fires every N VM instructions. A single
-   expensive built-in (e.g. sorting a large intermediate set) can overshoot the deadline
-   somewhat. The memory and length limits bound the damage.
-4. **sqlglot version coupling.** Function names are matched on sqlglot's canonical names
-   (e.g. `strftime` → `TIME_TO_STR`). A sqlglot upgrade could rename nodes. That fails closed
-   (queries get rejected), but it needs re-testing. sqlglot is pinned `<26`.
-5. **Mock generator.** The default model is keyword-based and only covers the demo questions.
-   The Anthropic provider exists but has no live integration test (no network in CI).
-6. **Output-alias resolution.** Aliases are allowed in GROUP BY/HAVING/ORDER BY only when they
-   cannot shadow a physical column. Some legitimate queries get rejected (false positives),
-   which is the intended trade-off.
-7. **CTE column lists** (`WITH x(a, b) AS …`) are not resolved and get rejected.
-8. **Request size cap** is enforced in the app. A reverse proxy should enforce it as well.
-9. **Single SQLite file.** No connection pooling. Each query pays the cost of opening a
-   connection (≈ sub-millisecond locally).
-
-## Next phase suggestions
-
-AuthN/Z with per-role policies, rate limiting, a structured audit log, a real LLM provider
-with evaluation sets, a Postgres backend (read-only role + statement_timeout + RLS), and
-fuzzing the validator against the authorizer (differential testing).
+1. **Prompt-injection heuristics are not complete.** The input guard catches common patterns, not
+   every phrasing. That's acceptable because the real boundary is the AST guard plus the authorizer:
+   a hijacked model still can't read hidden columns or write anything. The worst case is a wrong
+   but authorized answer.
+2. **Wrong answers.** The guard ensures queries are *safe*, not *correct*. The UI always shows the
+   SQL that ran, its assumptions and the raw rows, so users can check. The free 70B model is good
+   but can misread ambiguous questions.
+3. **Inference over allowed data.** Users can always learn anything about columns they're allowed
+   to see, including through predicates. Hide columns that shouldn't be queryable at all.
+4. **Summaries can misstate numbers.** The 8B summary model sees only the shown rows and is told not
+   to invent values, but the table is the source of truth.
+5. **Groq free-tier limits.** About 1,000 requests/day for the 70B model and 14,400/day for the 8B
+   model; each question uses 1–5 calls. When limits are hit the user gets a clear "try again"
+   message. Upgrade or switch models in `.env`.
+6. **Type inference is heuristic.** Ambiguous dates where every value fits both day-first and
+   month-first are read as day-first (`dd/mm/yyyy`). Zero-padded codes stay text.
+7. **sqlglot version coupling.** Function names are matched on sqlglot's canonical names.
+   Upgrades fail closed (queries get rejected) but need re-testing; sqlglot is pinned `<26`.
+8. **LangGraph untested in the build sandbox.** The node and routing logic is fully tested
+   through the built-in runner. `test_agent_graph.py` re-runs every scenario on LangGraph when it's
+   installed, so run `pytest` locally to cover that path.
