@@ -1,6 +1,6 @@
 [project]
 name = "sqlyapper"
-version = "0.1.0"
+version = "0.2.0"
 description = "Secure natural-language-to-SQL agent (Phase 1: secure foundation)"
 requires-python = ">=3.12"
 readme = "README.md"

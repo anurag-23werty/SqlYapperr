@@ -3,3 +3,6 @@ fastapi>=0.115,<1.0
 uvicorn>=0.30,<1.0
 sqlglot>=25.20,<26
 pydantic>=2.7,<3
+langgraph>=0.2.60,<2.0      # agent orchestration (StateGraph)
+httpx>=0.27,<1.0            # Groq API client (OpenAI-compatible endpoint)
+python-multipart>=0.0.9     # CSV uploads

@@ -11,3 +11,5 @@ data/*.db
 data/*.db-*
 reports/*.xml
 .DS_Store
+data/users/
+*.tmp
