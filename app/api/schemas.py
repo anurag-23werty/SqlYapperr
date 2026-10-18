@@ -11,27 +11,56 @@ class _Strict(BaseModel):
     model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
 
 
+# ------------------------------------------------------------------ auth
+class SignUpRequest(_Strict):
+    email: str = Field(min_length=3, max_length=254)
+    name: str = Field(min_length=1, max_length=80)
+    password: str = Field(min_length=1, max_length=128)
+
+
+class SignInRequest(_Strict):
+    email: str = Field(min_length=3, max_length=254)
+    password: str = Field(min_length=1, max_length=128)
+
+
+class UserOut(BaseModel):
+    id: str
+    email: str
+    name: str
+
+
+class SessionOut(BaseModel):
+    user: UserOut
+    csrf_token: str
+
+
+# -------------------------------------------------------------- datasets
+class DatasetOut(BaseModel):
+    id: str
+    name: str
+    created_at: float
+    tables: list[dict[str, Any]]
+
+
+class ColumnVisibilityRequest(_Strict):
+    table: str = Field(min_length=1, max_length=64, pattern=r"^[a-z_][a-z0-9_]{0,62}$")
+    column: str | None = Field(default=None, max_length=64, pattern=r"^[a-z_][a-z0-9_]{0,62}$")
+    hidden: bool
+
+
+# ------------------------------------------------------------------ chat
 class ChatRequest(_Strict):
-    question: str = Field(min_length=1, max_length=10_000, description="Natural-language question")
+    question: str = Field(min_length=1, max_length=10_000)
+    conversation_id: str | None = Field(default=None, pattern=r"^[0-9a-f]{32}$")
 
 
 class ValidateRequest(_Strict):
-    sql: str = Field(min_length=1, max_length=100_000, description="SQL candidate to validate (never executed)")
+    sql: str = Field(min_length=1, max_length=100_000)
 
 
 class Issue(BaseModel):
     code: str
     message: str
-
-
-class ValidateResponse(BaseModel):
-    request_id: str
-    valid: bool
-    safe_sql: str | None = None
-    effective_limit: int | None = None
-    applied_default_limit: bool = False
-    issues: list[Issue] = []
-    executed: Literal[False] = False
 
 
 class Attempt(BaseModel):
@@ -44,47 +73,36 @@ class Attempt(BaseModel):
 
 class ChatResponse(BaseModel):
     request_id: str
-    status: Literal["ok", "rejected", "error"]
+    conversation_id: str
+    kind: Literal["answer", "out_of_scope", "chitchat", "blocked", "rejected", "error"]
+    message: str | None = None
+    answer: str | None = None
     sql: str | None = None
     explanation: str | None = None
+    assumptions: list[str] = []
     columns: list[str] = []
     rows: list[list[Any]] = []
     row_count: int = 0
     truncated: bool = False
     applied_default_limit: bool = False
     duration_ms: float | None = None
+    plan: list[str] = []
     attempts: list[Attempt] = []
-    error: Issue | None = None
+    error_code: str | None = None
 
 
-class ColumnOut(BaseModel):
-    name: str
-    type: str
-    primary_key: bool
-
-
-class ForeignKeyOut(BaseModel):
-    column: str
-    references: str
-
-
-class TableOut(BaseModel):
-    name: str
-    columns: list[ColumnOut]
-    foreign_keys: list[ForeignKeyOut]
-
-
-class SchemaResponse(BaseModel):
-    tables: list[TableOut]
+class ValidateResponse(BaseModel):
+    request_id: str
+    valid: bool
+    safe_sql: str | None = None
+    effective_limit: int | None = None
+    applied_default_limit: bool = False
+    issues: list[Issue] = []
+    executed: Literal[False] = False
 
 
 class HealthResponse(BaseModel):
     status: Literal["ok", "degraded"]
-    database: Literal["ok", "unavailable"]
     llm_provider: str
+    graph_engine: Literal["langgraph", "builtin"]
     version: str
-
-
-class ErrorResponse(BaseModel):
-    request_id: str
-    error: Issue
