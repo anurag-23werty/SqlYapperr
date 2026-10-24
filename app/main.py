@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import logging
+import time
 import uuid
 from pathlib import Path
 
@@ -17,9 +18,14 @@ from starlette.types import ASGIApp, Message, Receive, Scope, Send
 from app.agent.llm import LLMClient
 from app.api.routes import router
 from app.config import Settings, get_settings
+from app.observability import metrics
+from app.observability.context import request_scope
+from app.observability.logs import setup_logging
+from app.observability.tracing import setup_tracing
 from app.services import VERSION, build_services
 
 log = logging.getLogger("app")
+access_log = logging.getLogger("app.access")
 STATIC_DIR = Path(__file__).resolve().parent / "web" / "static"
 
 _CSP = (
@@ -48,6 +54,31 @@ class RequestContextMiddleware:
             return
         request_id = uuid.uuid4().hex
         scope.setdefault("state", {})["request_id"] = request_id
+        started = time.perf_counter()
+        status_holder = {"status": 500}
+        with request_scope(request_id):
+            try:
+                await self._handle(scope, receive, send, request_id, status_holder)
+            finally:
+                self._observe(scope, status_holder["status"], time.perf_counter() - started)
+
+    @staticmethod
+    def _observe(scope: Scope, status: int, elapsed: float) -> None:
+        route = scope.get("route")
+        path: str = scope.get("path", "")
+        template = getattr(route, "path", None) or ("/static" if path.startswith("/static/") else "unmatched")
+        method = scope.get("method", "GET")
+        metrics.HTTP_REQUESTS.inc(method=method, route=template, status=str(status))
+        metrics.HTTP_LATENCY.observe(elapsed, method=method, route=template)
+        if template not in {"/health", "/ready", "/metrics", "/static"}:
+            access_log.info(
+                "request completed",
+                extra={"method": method, "route": template, "status": status, "duration_ms": round(elapsed * 1000, 1)},
+            )
+
+    async def _handle(
+        self, scope: Scope, receive: Receive, send: Send, request_id: str, status_holder: dict[str, int]
+    ) -> None:
         path: str = scope.get("path", "")
         is_upload = scope.get("method") == "POST" and path.rstrip("/") == "/api/datasets"
         limit = self.max_upload_bytes if is_upload else self.max_body_bytes
@@ -55,6 +86,7 @@ class RequestContextMiddleware:
 
         async def send_with_headers(message: Message) -> None:
             if message["type"] == "http.response.start":
+                status_holder["status"] = int(message.get("status", 500))
                 headers = list(message.get("headers", []))
                 headers += [
                     (b"x-request-id", request_id.encode()),
@@ -120,7 +152,8 @@ def create_app(
     settings: Settings | None = None, llm: LLMClient | None = None, use_langgraph: bool | None = None
 ) -> FastAPI:
     settings = settings or get_settings()
-    logging.basicConfig(level=settings.log_level, format="%(asctime)s %(levelname)s %(name)s %(message)s")
+    setup_logging(settings.log_level, settings.log_format)
+    setup_tracing(settings.otel_exporter_endpoint, settings.otel_service_name, settings.env)
     production = settings.env == "production"
 
     app = FastAPI(

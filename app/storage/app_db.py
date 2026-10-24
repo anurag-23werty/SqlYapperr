@@ -16,7 +16,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-_SCHEMA = """
+_SCHEMA_V1 = """
 CREATE TABLE IF NOT EXISTS users (
     id            TEXT PRIMARY KEY,
     email         TEXT NOT NULL UNIQUE,
@@ -56,6 +56,22 @@ CREATE TABLE IF NOT EXISTS query_log (
 CREATE INDEX IF NOT EXISTS idx_log_conv ON query_log(user_id, dataset_id, conversation_id, created_at);
 """
 
+_SCHEMA_V2 = """
+ALTER TABLE query_log ADD COLUMN latency_ms REAL;
+ALTER TABLE query_log ADD COLUMN llm_calls INTEGER;
+ALTER TABLE query_log ADD COLUMN prompt_tokens INTEGER;
+ALTER TABLE query_log ADD COLUMN completion_tokens INTEGER;
+ALTER TABLE query_log ADD COLUMN generations INTEGER;
+CREATE TABLE IF NOT EXISTS rate_events (key TEXT NOT NULL, ts REAL NOT NULL);
+CREATE INDEX IF NOT EXISTS idx_rate_key_ts ON rate_events(key, ts);
+"""
+
+# Append-only. Never edit a released migration; add a new one.
+MIGRATIONS: list[tuple[int, str, str]] = [
+    (1, "initial schema", _SCHEMA_V1),
+    (2, "query stats + shared rate limiting", _SCHEMA_V2),
+]
+
 
 @dataclass(frozen=True)
 class User:
@@ -86,8 +102,73 @@ class AppDB:
     def __init__(self, path: Path) -> None:
         self.path = Path(path)
         self.path.parent.mkdir(parents=True, exist_ok=True)
+        self.migrate()
+
+    # ------------------------------------------------------------- migrations
+    def migrate(self) -> int:
+        """Apply pending migrations. Safe to call from several workers at once."""
         with self._conn() as conn:
-            conn.executescript(_SCHEMA)
+            conn.execute(
+                "CREATE TABLE IF NOT EXISTS schema_migrations (version INTEGER PRIMARY KEY, name TEXT NOT NULL, "
+                "applied_at REAL NOT NULL)"
+            )
+            conn.execute("BEGIN IMMEDIATE")  # one migrator at a time; others wait, then see it done
+            try:
+                applied = {r[0] for r in conn.execute("SELECT version FROM schema_migrations")}
+                legacy = conn.execute(
+                    "SELECT COUNT(1) FROM sqlite_schema WHERE type = 'table' AND name = 'users'"
+                ).fetchone()[0]
+                if not applied and legacy:
+                    # Database created before migrations existed: it already has the v1 schema.
+                    conn.execute("INSERT INTO schema_migrations VALUES (1, ?, ?)", ("initial schema", time.time()))
+                    applied.add(1)
+                for version, name, script in MIGRATIONS:
+                    if version in applied:
+                        continue
+                    for statement in (s.strip() for s in script.split(";")):
+                        if statement:
+                            conn.execute(statement)
+                    conn.execute("INSERT INTO schema_migrations VALUES (?, ?, ?)", (version, name, time.time()))
+                conn.execute("COMMIT")
+            except Exception:
+                conn.execute("ROLLBACK")
+                raise
+            return max(v for v, *_ in MIGRATIONS)
+
+    def schema_version(self) -> int:
+        with self._conn() as conn:
+            return int(conn.execute("SELECT COALESCE(MAX(version), 0) FROM schema_migrations").fetchone()[0])
+
+    def ping(self) -> bool:
+        """Readiness: can we write to the app database?"""
+        with self._conn() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            conn.execute("ROLLBACK")
+        return True
+
+    # ------------------------------------------------------------ rate limits
+    def rate_hit(self, key: str, limit: int, window_s: float) -> bool:
+        """Sliding-window limiter shared by every worker process on this host."""
+        now = time.time()
+        with self._conn() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            try:
+                conn.execute("DELETE FROM rate_events WHERE key = ? AND ts < ?", (key, now - window_s))
+                count = conn.execute("SELECT COUNT(1) FROM rate_events WHERE key = ?", (key,)).fetchone()[0]
+                allowed = count < limit
+                if allowed:
+                    conn.execute("INSERT INTO rate_events (key, ts) VALUES (?, ?)", (key, now))
+                if int(now) % 97 == 0:  # occasional global cleanup
+                    conn.execute("DELETE FROM rate_events WHERE ts < ?", (now - 3600,))
+                conn.execute("COMMIT")
+            except Exception:
+                conn.execute("ROLLBACK")
+                raise
+        return allowed
+
+    def rate_reset(self, key: str) -> None:
+        with self._conn() as conn:
+            conn.execute("DELETE FROM rate_events WHERE key = ?", (key,))
 
     @contextmanager
     def _conn(self) -> Iterator[sqlite3.Connection]:
@@ -195,14 +276,28 @@ class AppDB:
     def log_query(
         self, *, request_id: str, user_id: str, dataset_id: str, conversation_id: str | None,
         question: str, sql: str | None, status: str, codes: list[str],
+        latency_ms: float | None = None, llm_calls: int | None = None, prompt_tokens: int | None = None,
+        completion_tokens: int | None = None, generations: int | None = None,
     ) -> None:
         with self._conn() as conn:
             conn.execute(
                 "INSERT INTO query_log (request_id, user_id, dataset_id, conversation_id, question, sql, status, codes, "
-                "created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                "created_at, latency_ms, llm_calls, prompt_tokens, completion_tokens, generations) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 (request_id, user_id, dataset_id, conversation_id, question[:2000], sql, status,
-                 json.dumps(codes[:20]), time.time()),
+                 json.dumps(codes[:20]), time.time(), latency_ms, llm_calls, prompt_tokens, completion_tokens,
+                 generations),
             )
+
+    def usage_summary(self, user_id: str, since: float) -> dict[str, Any]:
+        with self._conn() as conn:
+            row = conn.execute(
+                "SELECT COUNT(1), COALESCE(SUM(prompt_tokens), 0), COALESCE(SUM(completion_tokens), 0), "
+                "COALESCE(SUM(CASE WHEN status = 'ok' THEN 1 ELSE 0 END), 0) FROM query_log "
+                "WHERE user_id = ? AND created_at >= ?",
+                (user_id, since),
+            ).fetchone()
+        return {"questions": row[0], "prompt_tokens": row[1], "completion_tokens": row[2], "answered": row[3]}
 
     def recent_turns(self, user_id: str, dataset_id: str, conversation_id: str, limit: int) -> list[tuple[str, str]]:
         """Last successful (question, validated SQL) pairs for follow-up context."""

@@ -6,9 +6,11 @@ byte-for-byte identical data, so tests can assert on concrete values.
 
 from __future__ import annotations
 
+import os
 import random
 import sqlite3
 import sys
+import threading
 from datetime import date, timedelta
 from pathlib import Path
 
@@ -73,7 +75,7 @@ STATUSES = ["completed"] * 70 + ["shipped"] * 15 + ["cancelled"] * 7 + ["returne
 
 
 def build(conn: sqlite3.Connection, seed: int = SEED) -> None:
-    rng = random.Random(seed)
+    rng = random.Random(seed)  # noqa: S311 - deterministic demo data, not security
     conn.executescript(SCHEMA)
 
     customers = []
@@ -88,10 +90,8 @@ def build(conn: sqlite3.Connection, seed: int = SEED) -> None:
         [(pid, n, c, p) for pid, (n, c, p) in enumerate(CATALOG, start=1)],
     )
 
-    order_id = 0
     start = date(2024, 1, 1)
-    for _ in range(600):
-        order_id += 1
+    for order_id in range(1, 601):
         cid = rng.randint(1, 60)
         odate = start + timedelta(days=rng.randint(0, 730))  # 2024-01-01 .. 2025-12-31
         status = rng.choice(STATUSES)
@@ -123,14 +123,17 @@ def seed_database(path: Path, *, overwrite: bool = False, seed: int = SEED) -> P
             return path
         path.unlink()
     path.parent.mkdir(parents=True, exist_ok=True)
-    tmp = path.with_suffix(path.suffix + ".tmp")
-    if tmp.exists():
-        tmp.unlink()
+    # Unique temp name: several workers may seed concurrently at first start-up.
+    tmp = path.with_name(f".{path.name}.{os.getpid()}.{threading.get_ident()}.tmp")
+    tmp.unlink(missing_ok=True)
     conn = sqlite3.connect(tmp)
     try:
         build(conn, seed)
     finally:
         conn.close()
+    if path.exists() and not overwrite:  # another worker won the race; keep its identical copy
+        tmp.unlink(missing_ok=True)
+        return path
     tmp.replace(path)  # atomic: readers never see a half-built database
     return path
 

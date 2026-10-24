@@ -12,8 +12,8 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from app.agent.graph import langgraph_available
-from app.agent.llm import GroqClient, LLMClient, MockLLM
-from app.auth.ratelimit import RateLimiter
+from app.agent.llm import GroqClient, InstrumentedLLM, LLMClient, MockLLM, record_usage
+from app.auth.ratelimit import RateLimiter, SharedRateLimiter
 from app.auth.service import AuthService
 from app.config import Settings
 from app.database.seed import seed_database
@@ -32,8 +32,8 @@ class Services:
     datasets: DatasetService
     llm: LLMClient
     use_langgraph: bool
-    login_limiter: RateLimiter
-    chat_limiter: RateLimiter
+    login_limiter: RateLimiter | SharedRateLimiter
+    chat_limiter: RateLimiter | SharedRateLimiter
     version: str = VERSION
 
 
@@ -42,7 +42,7 @@ def build_llm(settings: Settings, check_models: bool = True) -> LLMClient:
         assert settings.groq_api_key is not None
         client = GroqClient(
             api_key=settings.groq_api_key.get_secret_value(), base_url=settings.groq_base_url,
-            timeout_s=settings.llm_timeout_s, max_retries=settings.llm_max_retries,
+            timeout_s=settings.llm_timeout_s, max_retries=settings.llm_max_retries, on_usage=record_usage,
         )
         if check_models:
             available = client.available_models()
@@ -77,8 +77,14 @@ def build_services(settings: Settings, llm: LLMClient | None = None, use_langgra
                          max_columns=settings.max_columns_per_table, max_bytes=settings.max_upload_mb * 1024 * 1024),
             settings.max_datasets_per_user,
         ),
-        llm=llm or build_llm(settings),
+        llm=InstrumentedLLM(llm or build_llm(settings)),
         use_langgraph=lg,
-        login_limiter=RateLimiter(settings.login_rate_per_minute),
-        chat_limiter=RateLimiter(settings.chat_rate_per_minute),
+        login_limiter=_limiter(settings, app_db, settings.login_rate_per_minute, "login"),
+        chat_limiter=_limiter(settings, app_db, settings.chat_rate_per_minute, "chat"),
     )
+
+
+def _limiter(settings: Settings, db: AppDB, limit: int, namespace: str) -> RateLimiter | SharedRateLimiter:
+    if settings.rate_limit_backend == "shared":
+        return SharedRateLimiter(db, limit, 60.0, namespace)
+    return RateLimiter(limit)

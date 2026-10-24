@@ -24,6 +24,7 @@ from typing import Any
 
 from app.database.authorizer import install_authorizer
 from app.database.connection import DatabaseUnavailable, open_readonly_connection
+from app.observability import metrics
 from app.security.policies import AccessPolicy
 from app.security.validated import ValidatedQuery
 
@@ -122,6 +123,7 @@ class QueryExecutor:
         try:
             conn = open_readonly_connection(self._db_path)
         except DatabaseUnavailable:
+            metrics.QUERY_ERRORS.inc(code=ExecutionErrorCode.DATABASE_UNAVAILABLE)
             raise ExecutionError(ExecutionErrorCode.DATABASE_UNAVAILABLE, request_id) from None
 
         started = time.monotonic()
@@ -166,6 +168,7 @@ class QueryExecutor:
                 "query failed request_id=%s code=%s error_type=%s denials=%s",
                 request_id, code, type(exc).__name__, denials,
             )
+            metrics.QUERY_ERRORS.inc(code=code)
             raise ExecutionError(code, request_id) from None
         finally:
             try:
@@ -173,6 +176,7 @@ class QueryExecutor:
             finally:
                 conn.close()
 
+        metrics.QUERY_LATENCY.observe(time.monotonic() - started)
         return QueryResult(
             request_id=request_id,
             columns=columns,

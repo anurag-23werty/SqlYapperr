@@ -14,7 +14,7 @@ from __future__ import annotations
 import logging
 import re
 from collections.abc import Iterable, Mapping
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 
 import sqlglot
 from sqlglot import exp
@@ -35,11 +35,12 @@ _IDENTIFIER = re.compile(r"[A-Za-z_][A-Za-z0-9_]{0,63}")
 
 def _types(*names: str) -> tuple[type[exp.Expression], ...]:
     """Resolve node classes by name, tolerating differences between sqlglot versions."""
-    return tuple(t for n in names if isinstance(t := getattr(exp, n, None), type))
+    found = (getattr(exp, n, None) for n in names)
+    return tuple(t for t in found if isinstance(t, type) and issubclass(t, exp.Expression))
 
 
 SET_OPERATIONS = _types("Union", "Intersect", "Except")
-ROOT_TYPES = (exp.Select, *SET_OPERATIONS)
+ROOT_TYPES: tuple[type[exp.Expression], ...] = (exp.Select, *SET_OPERATIONS)
 FORBIDDEN_NODES = _types(
     "Insert", "Update", "Delete", "Drop", "Create", "Alter", "AlterTable", "Command", "Pragma",
     "Attach", "Detach", "Transaction", "Commit", "Rollback", "Set", "Use", "Merge", "Into", "Copy",

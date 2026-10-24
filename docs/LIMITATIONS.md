@@ -4,8 +4,10 @@
 - **No password reset or email verification.** Needs an email provider.
 - **No MFA.**
 - **CSV only.** Excel, Parquet and direct database connections (Postgres/MySQL) are not supported yet.
-- **Rate limits are in-process.** They reset on restart and aren't shared between workers.
-  Use Redis for multi-worker deployments.
+- **Single host.** Rate limits, sessions and the app DB are shared through SQLite on one volume,
+  which covers several workers and replicas on one machine. Multi-host needs Postgres + Redis (Phase C).
+- **Metrics are per process.** Run one worker per container and scale with replicas (the default);
+  Prometheus discovers each replica.
 - **SQLite only.** Each dataset is a local file. Fine for single-node deployments; a shared
   warehouse would need a read-only DB role, statement timeouts and row-level security instead.
 
@@ -33,3 +35,6 @@
 8. **LangGraph untested in the build sandbox.** The node and routing logic is fully tested
    through the built-in runner. `test_agent_graph.py` re-runs every scenario on LangGraph when it's
    installed, so run `pytest` locally to cover that path.
+9. **Container image not built in the build sandbox** (no registry access). The Dockerfile and Compose
+   files were validated (`docker compose config`), and the production start command was run locally
+   with 2 workers. CI builds, scans and smoke-tests the image on every push.

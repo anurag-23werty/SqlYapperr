@@ -71,6 +71,14 @@ class Attempt(BaseModel):
     messages: list[str] = []
 
 
+class Usage(BaseModel):
+    latency_ms: float = 0.0
+    generations: int = 0
+    llm_calls: int = 0
+    prompt_tokens: int = 0
+    completion_tokens: int = 0
+
+
 class ChatResponse(BaseModel):
     request_id: str
     conversation_id: str
@@ -89,6 +97,7 @@ class ChatResponse(BaseModel):
     plan: list[str] = []
     attempts: list[Attempt] = []
     error_code: str | None = None
+    usage: Usage = Usage()
 
 
 class ValidateResponse(BaseModel):

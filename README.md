@@ -23,6 +23,11 @@ question ─► input guard ─► router ─► LLM drafts SQL ─► AST guard
   at most twice. It handles out-of-scope questions and follow-ups.
 - **Guardrails** against prompt injection: input guard, delimiter fencing, a router, the AST guard,
   and the SQLite authorizer. No `*` ever reaches the database.
+- **Measured**: a golden-question accuracy suite and a red-team suite, gated in CI.
+- **Observable**: JSON logs with request ids, Prometheus metrics, OpenTelemetry traces per agent step,
+  and per-question token usage.
+- **Deployable**: non-root Docker image, Compose stack with automatic HTTPS, versioned migrations,
+  and rate limits shared across workers.
 
 ## Run it
 
@@ -37,11 +42,22 @@ python -m uvicorn app.main:app --reload --port 8010
 Open http://127.0.0.1:8010, create an account, and try the sample shop dataset or upload your own
 CSV files. Without a Groq key, set `SQLY_LLM_PROVIDER=mock` to try the app with a simple offline model.
 
-## Tests
+## Quality gates
 
 ```bash
-pytest -q
+make check          # ruff + mypy + pytest + offline red-team eval (what CI runs)
+make eval           # accuracy eval against Groq (needs GROQ_API_KEY)
 ```
+
+## Deploy
+
+```bash
+docker compose up -d --build                              # app + automatic HTTPS (Caddy)
+docker compose --profile observability up -d --build      # + Prometheus + Jaeger
+docker compose up -d --scale app=3                        # scale out
+```
+
+See [docs/OPERATIONS.md](docs/OPERATIONS.md) for secrets, health checks, metrics, logs, traces and backups.
 
 ## Docs
 
@@ -49,6 +65,8 @@ pytest -q
 - [Security policy](docs/SECURITY_POLICY.md)
 - [Threat model](docs/THREAT_MODEL.md)
 - [Known limitations](docs/LIMITATIONS.md)
+- [Operations runbook](docs/OPERATIONS.md)
+- [Evaluation harness](docs/EVALS.md)
 - [Test report](docs/TEST_REPORT.md)
 
 ## Layout
@@ -63,6 +81,11 @@ app/
   database/                                  read-only connections, SQLite authorizer, sample seed
   execution/                                 constrained executor (deadline, row/byte caps)
   api/                                       HTTP routes, schemas, auth/CSRF dependencies
+  observability/                             JSON logs, Prometheus metrics, OpenTelemetry tracing
   web/static/                                sign-in page + chat UI (no framework, strict CSP)
   tests/                                     unit, adversarial and end-to-end tests
+evals/                                       golden accuracy set, red-team suite, scorer, runner
+deploy/                                      Caddyfile, Prometheus config, alert examples
+.github/                                     CI pipeline, Dependabot
+Dockerfile, docker-compose.yml, Makefile
 ```

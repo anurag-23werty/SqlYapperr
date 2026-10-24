@@ -1,0 +1,42 @@
+.PHONY: install run test lint typecheck check eval-redteam eval eval-all docker-build up up-obs down logs
+
+install:            ## create venv deps (run inside your venv)
+	pip install -r requirements-dev.txt
+
+run:                ## dev server on :8010
+	python -m uvicorn app.main:app --reload --port 8010
+
+test:
+	pytest -q
+
+lint:
+	ruff check app evals
+
+typecheck:
+	mypy
+
+check: lint typecheck test eval-redteam   ## everything CI runs offline
+
+eval-redteam:       ## offline security suite (must be 100%)
+	python -m evals.run --suite redteam --provider mock
+
+eval:               ## accuracy suite against Groq (needs GROQ_API_KEY)
+	python -m evals.run --suite accuracy --provider groq
+
+eval-all:
+	python -m evals.run --suite all --provider groq
+
+docker-build:
+	docker build -t sqlyapper:local .
+
+up:                 ## app + HTTPS proxy
+	docker compose up -d --build
+
+up-obs:             ## + Prometheus (127.0.0.1:9090) + Jaeger (127.0.0.1:16686)
+	docker compose --profile observability up -d --build
+
+down:
+	docker compose --profile observability down
+
+logs:
+	docker compose logs -f app

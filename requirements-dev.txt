@@ -1,2 +1,6 @@
 -r requirements.txt
+-r requirements-otel.txt
 pytest>=8.2,<10
+ruff>=0.6,<1.0
+mypy>=1.11,<3.0
+pip-audit>=2.7,<3.0

@@ -66,6 +66,7 @@ class GroqClient:
     def __init__(
         self, api_key: str, base_url: str, timeout_s: float = 30.0, max_retries: int = 2,
         transport: httpx.BaseTransport | None = None, sleep: Callable[[float], None] = time.sleep,
+        on_usage: Callable[[str, int, int], None] | None = None,
     ) -> None:
         self._client = httpx.Client(
             base_url=base_url.rstrip("/"),
@@ -75,6 +76,7 @@ class GroqClient:
         )
         self._max_retries = max_retries
         self._sleep = sleep
+        self._on_usage = on_usage
 
     def complete_json(
         self, *, purpose: Purpose, model: str, system: str, user: str, max_tokens: int = 700,
@@ -104,9 +106,13 @@ class GroqClient:
 
             if resp.status_code == 200:
                 try:
-                    content = resp.json()["choices"][0]["message"]["content"]
+                    body = resp.json()
+                    content = body["choices"][0]["message"]["content"]
                 except (ValueError, KeyError, IndexError, TypeError):
                     raise LLMError("bad_output", "unexpected response from the language model") from None
+                usage = body.get("usage") if isinstance(body, dict) else None
+                if self._on_usage and isinstance(usage, dict):
+                    self._on_usage(model, int(usage.get("prompt_tokens") or 0), int(usage.get("completion_tokens") or 0))
                 return parse_json_object(content)
             if resp.status_code in (401, 403):
                 raise LLMError("auth", "the language model rejected the API key (check GROQ_API_KEY)")
@@ -244,3 +250,56 @@ def _mock_sql(q: str, prompt: str) -> dict[str, Any]:
         "explanation": f"(mock model) Row count of {tables[0]}. Set GROQ_API_KEY for real answers.",
         "assumptions": [],
     }
+
+
+class InstrumentedLLM:
+    """Wraps any client with metrics, tracing and per-request usage accounting."""
+
+    def __init__(self, inner: LLMClient) -> None:
+        self.inner = inner
+        self.name = inner.name
+
+    def complete_json(
+        self, *, purpose: Purpose, model: str, system: str, user: str, max_tokens: int = 700,
+        reasoning_effort: str | None = None,
+    ) -> dict[str, Any]:
+        from app.observability import metrics
+        from app.observability.context import current_stats
+        from app.observability.tracing import set_attributes, span
+
+        started = time.perf_counter()
+        outcome = "ok"
+        with span("llm.complete", purpose=purpose, model=model, provider=self.inner.name) as current:
+            try:
+                return self.inner.complete_json(
+                    purpose=purpose, model=model, system=system, user=user, max_tokens=max_tokens,
+                    reasoning_effort=reasoning_effort,
+                )
+            except LLMError as err:
+                outcome = err.kind
+                set_attributes(current, error=err.kind)
+                raise
+            finally:
+                elapsed = time.perf_counter() - started
+                metrics.LLM_REQUESTS.inc(purpose=purpose, model=model, outcome=outcome)
+                metrics.LLM_LATENCY.observe(elapsed, purpose=purpose, model=model)
+                stats = current_stats()
+                if stats is not None:
+                    stats.add_call(model, elapsed * 1000, outcome == "ok")
+
+
+def record_usage(model: str, prompt_tokens: int, completion_tokens: int) -> None:
+    """``GroqClient(on_usage=...)`` hook: token metrics + per-request totals."""
+    from app.observability import metrics
+    from app.observability.context import current_stats
+    from app.observability.tracing import _otel_trace
+
+    metrics.LLM_TOKENS.inc(prompt_tokens, model=model, type="prompt")
+    metrics.LLM_TOKENS.inc(completion_tokens, model=model, type="completion")
+    stats = current_stats()
+    if stats is not None:
+        stats.add_tokens(prompt_tokens, completion_tokens)
+    if _otel_trace is not None:
+        current = _otel_trace.get_current_span()
+        current.set_attribute("sqly.prompt_tokens", prompt_tokens)
+        current.set_attribute("sqly.completion_tokens", completion_tokens)

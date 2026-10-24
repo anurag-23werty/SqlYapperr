@@ -1,10 +1,40 @@
 [project]
 name = "sqlyapper"
-version = "0.2.0"
-description = "Secure natural-language-to-SQL agent (Phase 1: secure foundation)"
+version = "0.3.0"
+description = "Secure natural-language-to-SQL agent"
 requires-python = ">=3.12"
 readme = "README.md"
 
 [tool.pytest.ini_options]
 testpaths = ["app/tests"]
 addopts = "-ra"
+
+[tool.ruff]
+target-version = "py312"
+line-length = 120
+extend-exclude = ["data", "reports"]
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "B", "UP", "S", "BLE", "SIM", "RUF"]
+ignore = [
+    "E501",    # line length is the formatter's job; long SQL/message strings stay readable
+    "S101",    # assert is used in tests and for internal invariants
+    "S608",    # SQL built from validated identifiers / AST (see ast_validator, datasets)
+    "RUF001", "RUF002", "RUF003",  # intentional unicode in UI copy and docs
+    "B008",    # FastAPI Depends() defaults
+    "SIM105",
+]
+
+[tool.ruff.lint.per-file-ignores]
+"app/tests/**" = ["S", "B017", "SIM117"]
+"evals/**" = ["S"]
+
+[tool.mypy]
+python_version = "3.12"
+packages = ["app", "evals"]
+ignore_missing_imports = true
+warn_unused_ignores = false
+check_untyped_defs = true
+no_implicit_optional = true
+strict_equality = true
+exclude = ["app/tests/"]

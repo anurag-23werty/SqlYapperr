@@ -1,0 +1,83 @@
+# Production-style local stack.
+#   docker compose up -d --build                             # app + HTTPS reverse proxy
+#   docker compose --profile observability up -d --build    # + Prometheus + Jaeger
+#   docker compose up -d --scale app=3                       # horizontal scaling (1 worker per replica)
+name: sqlyapper
+
+services:
+  app:
+    build: .
+    image: ghcr.io/anurag-23werty/sqlyapper:local
+    env_file: .env
+    environment:
+      SQLY_ENV: production
+      SQLY_COOKIE_SECURE: "true"
+      SQLY_LOG_FORMAT: json
+      SQLY_DATA_DIR: /data
+      SQLY_APP_DB_PATH: /data/app.db
+      SQLY_DB_PATH: /data/sample.db
+      SQLY_OTEL_EXPORTER_ENDPOINT: ${SQLY_OTEL_EXPORTER_ENDPOINT:-}
+      WEB_CONCURRENCY: "1"     # keep 1: per-process metrics; scale with --scale app=N
+    volumes:
+      - appdata:/data
+    expose:
+      - "8000"              # reachable only from the proxy and Prometheus, never published
+    read_only: true
+    tmpfs:
+      - /tmp
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    restart: unless-stopped
+    logging:
+      driver: json-file
+      options: { max-size: "10m", max-file: "5" }
+
+  proxy:
+    image: caddy:2.8.4
+    ports:
+      - "80:80"
+      - "443:443"
+    environment:
+      SITE_ADDRESS: ${SITE_ADDRESS:-localhost}
+    volumes:
+      - ./deploy/Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    depends_on:
+      app:
+        condition: service_healthy
+    restart: unless-stopped
+
+  prometheus:
+    profiles: ["observability"]
+    image: prom/prometheus:v2.54.1
+    command:
+      - --config.file=/etc/prometheus/prometheus.yml
+      - --storage.tsdb.retention.time=15d
+    volumes:
+      - ./deploy/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - ./deploy/metrics_token:/etc/prometheus/metrics_token:ro
+      - prom_data:/prometheus
+    ports:
+      - "127.0.0.1:9090:9090"
+    depends_on: [app]
+    restart: unless-stopped
+
+  jaeger:
+    profiles: ["observability"]
+    image: jaegertracing/all-in-one:1.60.0
+    environment:
+      COLLECTOR_OTLP_ENABLED: "true"
+    ports:
+      - "127.0.0.1:16686:16686"   # UI
+    expose:
+      - "4318"                    # OTLP/HTTP from the app
+    restart: unless-stopped
+
+volumes:
+  appdata:
+  caddy_data:
+  caddy_config:
+  prom_data:

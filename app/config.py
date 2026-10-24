@@ -89,10 +89,16 @@ class Settings(BaseModel):
     summarize_results: bool = True
     history_turns: int = Field(default=3, ge=0, le=10)
 
+    # Operations
     log_level: Literal["DEBUG", "INFO", "WARNING", "ERROR"] = "INFO"
+    log_format: Literal["text", "json"] = "text"
+    rate_limit_backend: Literal["memory", "shared"] = "shared"   # shared = across all workers on the host
+    metrics_token: SecretStr | None = None                       # bearer token for GET /metrics
+    otel_exporter_endpoint: str | None = None                    # e.g. http://jaeger:4318 (OTLP/HTTP)
+    otel_service_name: str = "sqlyapper"
 
     @model_validator(mode="after")
-    def _check_consistency(self) -> "Settings":
+    def _check_consistency(self) -> Settings:
         if self.default_limit > self.max_rows:
             raise ValueError("default_limit must be <= max_rows")
         if self.llm_provider == "groq" and not (self.groq_api_key and self.groq_api_key.get_secret_value()):
@@ -111,7 +117,7 @@ class Settings(BaseModel):
         return self.data_dir / "users"
 
     @classmethod
-    def from_env(cls, environ: dict[str, str] | None = None) -> "Settings":
+    def from_env(cls, environ: dict[str, str] | None = None) -> Settings:
         env = os.environ if environ is None else environ
         values: dict[str, object] = {}
         for name in cls.model_fields:

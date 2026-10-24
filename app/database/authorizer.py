@@ -96,7 +96,7 @@ def build_authorizer(policy: AccessPolicy, audit: AuthorizerAudit | None = None)
             # Everything else: writes, DDL, PRAGMA, ATTACH/DETACH, transactions,
             # recursive CTEs, virtual tables, savepoints, ANALYZE, REINDEX ... denied.
             return audit.deny(_ACTION_NAMES.get(action, f"ACTION_{action}"), arg1 or "")
-        except Exception:  # pragma: no cover - defensive: never fail open
+        except Exception:  # noqa: BLE001 - defensive: never fail open
             return sqlite3.SQLITE_DENY
 
     return authorizer

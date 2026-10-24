@@ -69,3 +69,15 @@
   `nosniff`, `Referrer-Policy: no-referrer`, `no-store` on API responses.
 - Request bodies are capped at 16 KB (uploads at `SQLY_MAX_UPLOAD_MB`). Validation errors never echo input.
 - `SQLY_ENV=production` refuses to start without a strong secret and secure cookies, and disables `/docs`.
+
+## 6. Operations security
+
+- `/metrics` needs a bearer token (`SQLY_METRICS_TOKEN`, constant-time compare). It is disabled in
+  production without one, and `/metrics` and `/ready` are never routed by the public proxy.
+- The container runs as an unprivileged user (uid 10001) with a read-only root filesystem, no Linux
+  capabilities and `no-new-privileges`. Only Caddy publishes ports.
+- Rate-limit keys are SHA-256 hashed before storage, so emails and IPs never sit in clear text.
+- Logs and traces carry ids, codes, timings, model names and token counts. They never carry
+  prompts, result rows, hidden schema or secrets.
+- CI runs pip-audit, gitleaks and a Trivy image scan, and Dependabot keeps dependencies, Actions and
+  base images up to date.

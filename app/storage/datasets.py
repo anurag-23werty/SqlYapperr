@@ -325,7 +325,7 @@ def describe_sqlite(
             qt = _quote(table.lower())
             row_count = conn.execute(f"SELECT COUNT(1) FROM {qt}").fetchone()[0]
             columns = []
-            for cid, name, ctype, *_ in conn.execute("SELECT cid, name, type, pk FROM pragma_table_info(?)", (table,)):
+            for _cid, name, ctype, *_ in conn.execute("SELECT cid, name, type, pk FROM pragma_table_info(?)", (table,)):
                 col = name.lower()
                 if not IDENTIFIER.fullmatch(col):
                     continue

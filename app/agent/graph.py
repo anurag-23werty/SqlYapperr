@@ -24,6 +24,7 @@ transition unit-testable without the framework installed.
 from __future__ import annotations
 
 import logging
+import time
 import uuid
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -33,9 +34,12 @@ from app.agent import prompts
 from app.agent.llm import LLMClient, LLMError
 from app.config import HARD_MAX_CORRECTIONS, Settings
 from app.execution.query_executor import ExecutionError, ExecutionErrorCode, ExecutionLimits, QueryExecutor
+from app.observability import metrics
+from app.observability.tracing import set_attributes, span
 from app.security.ast_validator import SQLValidator, ValidatorConfig
 from app.security.limits import LimitPolicy
 from app.security.prompt_guard import inspect_question
+from app.security.validated import ValidatedQuery
 from app.storage.datasets import DatasetContext
 
 log = logging.getLogger(__name__)
@@ -72,6 +76,7 @@ class AgentState(TypedDict, total=False):
     applied_default_limit: bool
     answer: str | None
     error_code: str | None
+    agent_ms: float
 
 
 @dataclass
@@ -129,6 +134,7 @@ def build_nodes(deps: AgentDeps) -> dict[str, Callable[[AgentState], dict[str, A
         verdict = inspect_question(state["question"], s.max_question_chars)
         if verdict.action == "block":
             log.info("input blocked request_id=%s category=%s", state["request_id"], verdict.category)
+            metrics.INPUT_BLOCKED.inc(category=verdict.category)
             return {"kind": "blocked", "message": verdict.message, "error_code": verdict.category.upper()}
         return {"question": verdict.text}
 
@@ -192,20 +198,25 @@ def build_nodes(deps: AgentDeps) -> dict[str, Callable[[AgentState], dict[str, A
 
     def guard_sql(state: AgentState) -> dict[str, Any]:
         attempts = list(state.get("attempts", []))
-        result = deps.validator.validate(state["candidate"]["sql"])
+        candidate = state.get("candidate")
+        assert candidate is not None  # routing only reaches guard_sql with a candidate
+        result = deps.validator.validate(candidate["sql"])
         if not result.ok or result.query is None:
             codes = [i.code for i in result.issues]
             messages = [i.message for i in result.issues]
             attempts.append({"attempt": state["generations"], "stage": "validation", "outcome": "rejected",
                              "codes": codes, "messages": messages})
             log.info("candidate rejected request_id=%s codes=%s", state["request_id"], codes)
+            for code in codes:
+                metrics.GUARD_REJECTIONS.inc(code=code)
             return {"attempts": attempts, "validated": None,
                     "feedback": list(state.get("feedback", [])) + messages}
         return {"attempts": attempts, "validated": result.query}
 
     def execute(state: AgentState) -> dict[str, Any]:
         attempts = list(state.get("attempts", []))
-        query = state["validated"]
+        query: ValidatedQuery | None = state.get("validated")
+        assert query is not None  # routing only reaches execute with a ValidatedQuery
         try:
             res = deps.executor.execute(query, request_id=state["request_id"])
         except ExecutionError as err:
@@ -217,8 +228,8 @@ def build_nodes(deps: AgentDeps) -> dict[str, Callable[[AgentState], dict[str, A
                 return {"attempts": attempts, "validated": None, "kind": "error", "sql": query.sql,
                         "error_code": err.code, "message": err.public_message}
             return {"attempts": attempts, "validated": None,
-                    "feedback": list(state.get("feedback", [])) + [
-                        "The query failed at execution time; check column types, functions and date formats."]}
+                    "feedback": [*state.get("feedback", []),
+                                 "The query failed at execution time; check column types, functions and date formats."]}
         attempts.append({"attempt": state["generations"], "stage": "execution", "outcome": "succeeded", "codes": []})
         cand = state["candidate"] or {}
         return {
@@ -243,8 +254,29 @@ def build_nodes(deps: AgentDeps) -> dict[str, Callable[[AgentState], dict[str, A
             answer = ""
         return {"answer": answer or fallback}
 
-    return {"guard_input": guard_input, "route": route, "generate_sql": generate_sql,
-            "guard_sql": guard_sql, "execute": execute, "summarize": summarize}
+    nodes = {"guard_input": guard_input, "route": route, "generate_sql": generate_sql,
+             "guard_sql": guard_sql, "execute": execute, "summarize": summarize}
+    return {name: _instrument(name, fn) for name, fn in nodes.items()}
+
+
+def _instrument(name: str, fn: Callable[[AgentState], dict[str, Any]]) -> Callable[[AgentState], dict[str, Any]]:
+    """Wrap a node in a trace span + latency metric. Records codes, never content."""
+
+    def wrapped(state: AgentState) -> dict[str, Any]:
+        started = time.perf_counter()
+        with span(f"agent.{name}", generation=state.get("generations", 0)) as current:
+            out = fn(state)
+            attempts = out.get("attempts")
+            last = attempts[-1] if attempts and len(attempts) > len(state.get("attempts", [])) else None
+            set_attributes(
+                current, kind=out.get("kind"), error_code=out.get("error_code"),
+                outcome=last.get("outcome") if last else None, codes=last.get("codes") if last else None,
+            )
+        metrics.NODE_LATENCY.observe(time.perf_counter() - started, node=name)
+        return out
+
+    wrapped.__name__ = name
+    return wrapped
 
 
 def _fallback_summary(state: AgentState) -> str:
@@ -335,18 +367,33 @@ def run_agent(
         "request_id": request_id or uuid.uuid4().hex, "question": question, "history": history or [],
         "generations": 0, "feedback": [], "attempts": [], "candidate": None, "validated": None,
     }
-    if use_langgraph:
-        final = compile_langgraph(deps).invoke(initial, {"recursion_limit": 30})
-    else:
-        final = _run_local(deps, initial)
+    started = time.perf_counter()
+    with span("agent.run", request_id=initial["request_id"], dataset_id=deps.ctx.id,
+              engine="langgraph" if use_langgraph else "builtin", history_turns=len(initial["history"])) as root:
+        if use_langgraph:
+            final = compile_langgraph(deps).invoke(initial, {"recursion_limit": 30})
+        else:
+            final = _run_local(deps, initial)
+        _finalize(final, deps)
+        set_attributes(root, kind=final["kind"], error_code=final.get("error_code"),
+                       generations=final.get("generations", 0), row_count=final.get("row_count"))
+    elapsed = time.perf_counter() - started
+    final["agent_ms"] = round(elapsed * 1000, 1)
+    metrics.AGENT_OUTCOMES.inc(kind=final["kind"])
+    metrics.AGENT_LATENCY.observe(elapsed)
+    if final.get("generations"):
+        metrics.AGENT_GENERATIONS.observe(final["generations"])
+    final.pop("validated", None)
+    return final
+
+
+def _finalize(final: AgentState, deps: AgentDeps) -> None:
     if not final.get("kind"):
         final["kind"] = "rejected"
         final["error_code"] = "RETRY_BUDGET_EXHAUSTED"
         final["message"] = (
             f"I couldn't build a safe query after {deps.budget} attempts. Try rephrasing or being more specific."
         )
-    final.pop("validated", None)
-    return final
 
 
 def langgraph_available() -> bool:

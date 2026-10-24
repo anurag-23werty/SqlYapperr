@@ -85,3 +85,28 @@ isolated at the file level as well as through ownership-checked lookups.
 
 Each chat carries a `conversation_id`. The last N successful (question, validated SQL) pairs are
 fetched from `query_log` and given to the model as fenced `<history>`, so "what about 2024?" works.
+
+## Production infrastructure
+
+```mermaid
+flowchart LR
+    U[Users] -->|HTTPS| C[Caddy<br/>TLS, HSTS, LB]
+    C --> A1[app replica 1]
+    C --> A2[app replica N]
+    A1 & A2 --> V[(appdata volume<br/>app.db WAL + datasets)]
+    A1 & A2 -->|OTLP/HTTP| J[Jaeger]
+    P[Prometheus] -->|/metrics bearer| A1 & A2
+    A1 & A2 -->|JSON mode| G[Groq API]
+```
+
+| Concern | Implementation |
+|---|---|
+| Logs | JSON lines with `request_id` (`app/observability/logs.py`) |
+| Metrics | dependency-free Prometheus registry (`app/observability/metrics.py`), `GET /metrics` |
+| Traces | OpenTelemetry API spans per agent node + LLM call; SDK + OTLP exporter in the image |
+| Usage | per-request LLM calls/tokens via contextvars, stored in `query_log`, returned as `usage` |
+| Migrations | versioned, append-only, `BEGIN IMMEDIATE` so concurrent replicas migrate once |
+| Rate limits | sliding window stored in the app DB, shared by every worker/replica on the host |
+| Health | `/health` (liveness), `/ready` (readiness), Docker `HEALTHCHECK` |
+| Evals | `evals/`: execution-accuracy golden set + red-team suite with a leak detector |
+| CI/CD | ruff, mypy, pytest (3.12/3.13), red-team eval, Groq accuracy eval, pip-audit, gitleaks, image build + Trivy scan, push to GHCR |

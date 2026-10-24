@@ -1,0 +1,14 @@
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+
+scrape_configs:
+  - job_name: sqlyapper
+    metrics_path: /metrics
+    authorization:
+      type: Bearer
+      credentials_file: /etc/prometheus/metrics_token   # same value as SQLY_METRICS_TOKEN
+    dns_sd_configs:          # one target per app replica
+      - names: ["app"]
+        type: A
+        port: 8000

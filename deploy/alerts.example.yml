@@ -1,0 +1,23 @@
+# Example Prometheus alert rules (add under rule_files: in prometheus.yml).
+groups:
+  - name: sqlyapper
+    rules:
+      - alert: HighErrorRate
+        expr: sum(rate(sqly_http_requests_total{status=~"5.."}[5m])) / sum(rate(sqly_http_requests_total[5m])) > 0.05
+        for: 10m
+        labels: { severity: page }
+        annotations: { summary: "More than 5% of requests are failing" }
+      - alert: LLMProviderFailing
+        expr: sum(rate(sqly_llm_requests_total{outcome!="ok"}[5m])) / sum(rate(sqly_llm_requests_total[5m])) > 0.2
+        for: 10m
+        labels: { severity: warn }
+        annotations: { summary: "Over 20% of Groq calls fail (rate limit, model retired, outage?)" }
+      - alert: AuthorizerDeniedGuardApprovedSQL
+        expr: increase(sqly_query_errors_total{code="AUTHORIZATION_DENIED"}[15m]) > 0
+        labels: { severity: page }
+        annotations: { summary: "The SQLite authorizer blocked SQL the AST guard approved: investigate immediately" }
+      - alert: SlowAnswers
+        expr: histogram_quantile(0.95, sum(rate(sqly_agent_duration_seconds_bucket[10m])) by (le)) > 15
+        for: 15m
+        labels: { severity: warn }
+        annotations: { summary: "p95 answer latency above 15s" }

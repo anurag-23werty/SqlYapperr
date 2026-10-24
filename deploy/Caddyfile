@@ -1,0 +1,33 @@
+# Set SITE_ADDRESS to your domain (e.g. sql.example.com) for automatic Let's Encrypt TLS.
+# With the default "localhost", Caddy uses its local CA (your browser will ask you to trust it).
+{$SITE_ADDRESS:localhost} {
+	encode zstd gzip
+
+	# Metrics and readiness are for the internal network only.
+	@internal path /metrics /ready
+	respond @internal 404
+
+	request_body {
+		max_size 25MB
+	}
+
+	# Discover every "app" replica through Docker DNS and balance across them.
+	reverse_proxy {
+		dynamic a app 8000 {
+			refresh 10s
+		}
+		lb_policy round_robin
+		lb_try_duration 5s
+		fail_duration 30s
+	}
+
+	header {
+		Strict-Transport-Security "max-age=31536000; includeSubDomains"
+		-Server
+	}
+
+	log {
+		output stdout
+		format json
+	}
+}

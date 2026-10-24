@@ -279,6 +279,10 @@ function renderTurn(question, r) {
   const foot = [];
   if (r.kind === "answer") foot.push(`${r.row_count} row${r.row_count === 1 ? "" : "s"}${r.truncated ? " (truncated)" : ""}`);
   if (r.applied_default_limit) foot.push("default row limit applied");
+  if (r.usage?.llm_calls) {
+    const tokens = (r.usage.prompt_tokens || 0) + (r.usage.completion_tokens || 0);
+    foot.push(`${(r.usage.latency_ms / 1000).toFixed(1)} s, ${r.usage.llm_calls} model call${r.usage.llm_calls === 1 ? "" : "s"}${tokens ? `, ${tokens.toLocaleString()} tokens` : ""}`);
+  }
   foot.push(`request ${r.request_id.slice(0, 8)}`);
   node.querySelector(".foot").textContent = foot.join(", ");
   return node;

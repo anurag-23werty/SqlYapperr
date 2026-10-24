@@ -2,12 +2,15 @@
 
 from __future__ import annotations
 
+import hmac
+import logging
 import uuid
 from pathlib import Path
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Request, UploadFile
-from fastapi.responses import FileResponse, JSONResponse, Response as RawResponse
+from fastapi.responses import FileResponse, JSONResponse, PlainTextResponse
+from fastapi.responses import Response as RawResponse
 
 from app.agent.graph import AgentDeps, run_agent
 from app.api.deps import client_ip, csrf_session, current_session, request_id, same_origin_only, services
@@ -22,11 +25,14 @@ from app.api.schemas import (
     SessionOut,
     SignInRequest,
     SignUpRequest,
+    Usage,
     UserOut,
     ValidateRequest,
     ValidateResponse,
 )
 from app.auth.service import SESSION_COOKIE, AuthError, IssuedSession
+from app.observability import metrics
+from app.observability.context import current_stats
 from app.storage.app_db import SessionRecord
 from app.storage.datasets import IngestError, public_schema
 
@@ -57,6 +63,36 @@ def health(request: Request) -> HealthResponse:
                           graph_engine="langgraph" if svc.use_langgraph else "builtin", version=svc.version)
 
 
+@router.get("/ready", include_in_schema=False)
+def ready(request: Request) -> JSONResponse:
+    """Readiness probe: app DB writable, sample DB present, LLM configured."""
+    svc = services(request)
+    checks: dict[str, bool] = {}
+    try:
+        checks["app_db"] = svc.app_db.ping() and svc.app_db.schema_version() >= 2
+    except Exception:  # noqa: BLE001 - any failure means "not ready"
+        checks["app_db"] = False
+    checks["sample_db"] = svc.settings.db_path.exists()
+    checks["llm"] = svc.llm.name in {"groq", "mock", "scripted"}
+    ok = all(checks.values())
+    return JSONResponse({"status": "ready" if ok else "not_ready", "checks": checks}, status_code=200 if ok else 503)
+
+
+@router.get("/metrics", include_in_schema=False)
+def prometheus_metrics(request: Request) -> PlainTextResponse:
+    """Prometheus scrape endpoint. Requires ``Authorization: Bearer $SQLY_METRICS_TOKEN`` when a
+    token is configured; without one it is open in development and disabled in production."""
+    settings = services(request).settings
+    token = settings.metrics_token.get_secret_value() if settings.metrics_token else ""
+    if token:
+        supplied = request.headers.get("authorization", "").removeprefix("Bearer ").strip()
+        if not hmac.compare_digest(supplied, token):
+            raise HTTPException(status_code=401, detail="metrics token required")
+    elif settings.env == "production":
+        raise HTTPException(status_code=404, detail="not found")
+    return PlainTextResponse(metrics.REGISTRY.render(), media_type="text/plain; version=0.0.4")
+
+
 # ------------------------------------------------------------------- auth
 
 
@@ -82,16 +118,19 @@ def sign_up(body: SignUpRequest, request: Request) -> JSONResponse:
     if not svc.settings.allow_signup:
         raise HTTPException(status_code=403, detail="sign-up is disabled")
     if not svc.login_limiter.allow(f"signup:{client_ip(request)}"):
+        metrics.AUTH_EVENTS.inc(event="rate_limited")
         raise HTTPException(status_code=429, detail="too many attempts, try again in a minute")
     try:
         issued = svc.auth.sign_up(body.email, body.name, body.password)
     except AuthError as err:
+        metrics.AUTH_EVENTS.inc(event="signup_failed")
         raise _auth_error(err) from None
+    metrics.AUTH_EVENTS.inc(event="signup")
     if svc.settings.db_path.exists():
         try:
             svc.datasets.add_sample(issued.user.id, svc.settings.db_path)
-        except Exception:  # pragma: no cover - sample data is a convenience only
-            pass
+        except Exception:
+            logging.getLogger(__name__).exception("could not add sample dataset for new user")
     return _session_response(request, issued)
 
 
@@ -100,11 +139,14 @@ def sign_in(body: SignInRequest, request: Request) -> JSONResponse:
     svc = services(request)
     keys = (f"login-ip:{client_ip(request)}", f"login-email:{body.email.strip().lower()}")
     if not all(svc.login_limiter.allow(k) for k in keys):
+        metrics.AUTH_EVENTS.inc(event="rate_limited")
         raise HTTPException(status_code=429, detail="too many attempts, try again in a minute")
     try:
         issued = svc.auth.sign_in(body.email, body.password)
     except AuthError as err:
+        metrics.AUTH_EVENTS.inc(event="signin_failed")
         raise _auth_error(err) from None
+    metrics.AUTH_EVENTS.inc(event="signin")
     return _session_response(request, issued)
 
 
@@ -207,10 +249,18 @@ def chat(dataset_id: str, body: ChatRequest, request: Request, session: CsrfSess
                       use_langgraph=svc.use_langgraph)
 
     codes = [c for a in state.get("attempts", []) for c in a.get("codes", [])]
+    stats = current_stats()
+    usage = Usage(
+        latency_ms=state.get("agent_ms", 0.0), generations=state.get("generations", 0),
+        llm_calls=stats.llm_calls if stats else 0, prompt_tokens=stats.prompt_tokens if stats else 0,
+        completion_tokens=stats.completion_tokens if stats else 0,
+    )
     svc.app_db.log_query(
         request_id=rid, user_id=session.user.id, dataset_id=dataset_id, conversation_id=conversation_id,
         question=state.get("question", body.question), sql=state.get("sql"),
         status="ok" if state["kind"] == "answer" else state["kind"], codes=codes or [state.get("error_code") or ""],
+        latency_ms=usage.latency_ms, llm_calls=usage.llm_calls, prompt_tokens=usage.prompt_tokens,
+        completion_tokens=usage.completion_tokens, generations=usage.generations,
     )
     return ChatResponse(
         request_id=rid, conversation_id=conversation_id, kind=state["kind"], message=state.get("message"),
@@ -219,10 +269,22 @@ def chat(dataset_id: str, body: ChatRequest, request: Request, session: CsrfSess
         row_count=state.get("row_count", 0), truncated=state.get("truncated", False),
         applied_default_limit=state.get("applied_default_limit", False), duration_ms=state.get("duration_ms"),
         plan=state.get("plan", []),
-        attempts=[Attempt(**{k: a.get(k, [] if k in ("codes", "messages") else None) for k in
-                             ("attempt", "stage", "outcome", "codes", "messages")}) for a in state.get("attempts", [])],
+        attempts=[
+            Attempt(attempt=int(a.get("attempt", 0)), stage=str(a.get("stage", "")), outcome=str(a.get("outcome", "")),
+                    codes=list(a.get("codes", [])), messages=list(a.get("messages", [])))
+            for a in state.get("attempts", [])
+        ],
         error_code=state.get("error_code"),
+        usage=usage,
     )
+
+
+@router.get("/api/usage")
+def my_usage(request: Request, session: Session) -> dict[str, object]:
+    """The signed-in user's questions and tokens over the last 24 hours."""
+    import time as _time
+
+    return services(request).app_db.usage_summary(session.user.id, _time.time() - 86_400)
 
 
 @router.post("/api/datasets/{dataset_id}/validate", response_model=ValidateResponse)

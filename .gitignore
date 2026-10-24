@@ -13,3 +13,7 @@ reports/*.xml
 .DS_Store
 data/users/
 *.tmp
+
+# local deployment secrets
+deploy/metrics_token
+.coverage

@@ -111,7 +111,7 @@ def test_connections_do_not_share_authorizer_state(db_path: Path) -> None:
             for _ in range(20):
                 with pytest.raises(sqlite3.DatabaseError):
                     run_raw(db_path, "SELECT email FROM customers")
-        except BaseException as exc:  # pragma: no cover
+        except BaseException as exc:  # noqa: BLE001  # pragma: no cover
             errors.append(exc)
 
     def unprotected() -> None:
