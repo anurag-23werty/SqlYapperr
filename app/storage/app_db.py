@@ -72,6 +72,9 @@ MIGRATIONS: list[tuple[int, str, str]] = [
     (2, "query stats + shared rate limiting", _SCHEMA_V2),
 ]
 
+class DuplicateEmailError(Exception):
+    """Any app-database backend raises this when the email is already registered."""
+
 
 @dataclass(frozen=True)
 class User:
@@ -175,7 +178,10 @@ class AppDB:
         conn = sqlite3.connect(self.path, timeout=5.0, isolation_level=None)
         try:
             conn.execute("PRAGMA foreign_keys = ON")
-            conn.execute("PRAGMA journal_mode = WAL")
+            try:
+                conn.execute("PRAGMA journal_mode = WAL")
+            except sqlite3.OperationalError:
+                pass  
             yield conn
         finally:
             conn.close()
@@ -183,11 +189,14 @@ class AppDB:
     # ------------------------------------------------------------------ users
     def create_user(self, user_id: str, email: str, name: str, password_hash: str) -> User:
         now = time.time()
-        with self._conn() as conn:
-            conn.execute(
+        try:
+            with self._conn() as conn:
+                conn.execute(
                 "INSERT INTO users (id, email, name, password_hash, created_at) VALUES (?, ?, ?, ?, ?)",
                 (user_id, email, name, password_hash, now),
             )
+        except sqlite3.IntegrityError:
+            raise DuplicateEmailError(email) from None
         return User(user_id, email, name, now)
 
     def user_credentials(self, email: str) -> tuple[User, str] | None:

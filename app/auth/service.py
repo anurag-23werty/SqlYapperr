@@ -14,7 +14,7 @@ import hashlib
 import hmac
 import re
 import secrets
-import sqlite3
+from app.storage.app_db import AppDB, DuplicateEmailError, SessionRecord, User
 import unicodedata
 import uuid
 from dataclasses import dataclass
@@ -79,7 +79,7 @@ class AuthService:
         validate_password(password, self._min_len)
         try:
             user = self.db.create_user(uuid.uuid4().hex, email, name, hash_password(password))
-        except sqlite3.IntegrityError:
+        except DuplicateEmailError:
             # Same shape as success-path errors elsewhere; does not reveal more than necessary.
             raise AuthError("EMAIL_TAKEN", "an account with this email already exists", 409) from None
         return self._issue(user)
